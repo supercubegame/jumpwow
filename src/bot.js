@@ -13,16 +13,16 @@
  * 那说明是关卡生成的问题，不是机器人的问题。
  * =========================================================================== */
 
-import { G, W, wrapDelta } from './engine.js';
+import { G, wrapDelta } from './engine.js';
 
 /**
- * 给定状态返回一步输入。
+ * 给定状态返回这一步该按什么。
  * @returns {{left:boolean, right:boolean, target:object|null}}
  */
 export function botInput(s){
   const p = s.player;
 
-  // 还能升到多高。下落中就是当前高度。
+  // 还能升到多高。已经在下落就是当前高度。
   const apex = p.y + (p.vy > 0 ? (p.vy * p.vy) / (2 * G) : 0);
 
   let best = null;
@@ -33,7 +33,7 @@ export function botInput(s){
     if (!best || pl.y > best.y) best = pl;
   }
 
-  // 一个都够不着：朝下方最高的那块靠，尽量在坠落中救回来
+  // 一块都够不着：朝现存最高的那块靠，尽量在坠落途中救回来
   if (!best){
     for (const pl of s.platforms){
       if (pl.broken) continue;
@@ -43,15 +43,6 @@ export function botInput(s){
   if (!best) return { left: false, right: false, target: null };
 
   const d = wrapDelta(p.x, best.x);
-  // 阈值比一步位移(≈0.32)大，避免在目标点上抖动
+  // 阈值要大于一步的位移（≈0.32），否则会在目标点上左右抖
   return { left: d < -0.4, right: d > 0.4, target: best };
-}
-
-/**
- * 让机器人自己玩一局。
- * @returns 这局的统计，供闸门断言
- */
-export function botPlay(s, maxTicks){
-  const { step } = arguments.length > 2 ? arguments[2] : {};
-  return s;
 }
