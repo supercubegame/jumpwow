@@ -7,8 +7,7 @@
   "bin": { "jumpwow": "bin/jumpwow.js" },
   "scripts": {
     "start": "node bin/jumpwow.js",
-    "watch": "node bin/jumpwow.js --bot",
-    "test": "node --test test/",
+    "test": "node --test test/*.test.js",
     "verify": "node scripts/verify.mjs",
     "check": "node scripts/verify.mjs"
   },

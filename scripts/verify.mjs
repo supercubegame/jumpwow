@@ -30,6 +30,7 @@ const SURVIVE_SEC = Number(process.env.SURVIVE_SEC || 60);
 const MIN_SCORE   = Number(process.env.MIN_SCORE || 120);
 const PERF_BUDGET = Number(process.env.PERF_BUDGET_MS || 2500);
 const ART         = path.resolve('artifacts');
+const TEST_DIR    = path.resolve('test');
 
 const checks = [];
 function check(name, ok, detail = ''){
@@ -40,37 +41,57 @@ function check(name, ok, detail = ''){
 const metrics = {};
 const extra = {};
 
-/* --- 01 单元测试 --- */
+/* --- 01 单元测试 ---
+ *
+ * 自己枚举文件显式传给 node。不要写 `--test test/`,新版 Node 会把它
+ * 当模块去 resolve 然后 MODULE_NOT_FOUND，测试一条都不会跑，而闸门
+ * 只会告诉你「失败 1 项」，非常难查。也不要依赖 shell 展开 glob，
+ * spawnSync 默认没有 shell。
+ */
 {
-  // 显式指定 tap，否则 reporter 会随是否 TTY 变化，解析逻辑跟着漂
-  const r = spawnSync(process.execPath,
-                      ['--test', '--test-reporter=tap', 'test/'],
-                      { encoding: 'utf8' });
-  const out = ((r.stdout || '') + (r.stderr || '')).replace(/\r/g, '');
+  const files = fs.existsSync(TEST_DIR)
+    ? fs.readdirSync(TEST_DIR).filter(f => f.endsWith('.test.js')).map(f => path.join('test', f))
+    : [];
 
-  // 目录模式下顶层统计的是「文件」和「目录」，得自己捞具体挂了哪条测试
-  const failing = [...out.matchAll(/^\s*not ok \d+ - (.+?)\s*$/gm)]
-    .map(m => m[1].trim())
-    .filter(n => !/\.(m|c)?js$/.test(n) && n !== 'test' && n !== 'test/');
+  if (!files.length){
+    check('01 单元测试全绿', false, '在 test/ 下没找到任何 *.test.js,测试文件被挪走了？');
+    metrics.unitFiles = 0;
+  } else {
+    // 显式指定 tap，否则 reporter 会随是否 TTY 变化，解析逻辑跟着漂
+    const r = spawnSync(process.execPath, ['--test', '--test-reporter=tap', ...files],
+                        { encoding: 'utf8' });
+    const out = ((r.stdout || '') + (r.stderr || '')).replace(/\r/g, '');
 
-  const errLines = [...out.matchAll(/^\s*(?:error|expected|actual):\s*(.+)$/gm)]
-    .map(m => m[1].trim()).filter(v => v && v !== "'test failed'").slice(0, 4);
+    const num = re => { const m = out.match(re); return m ? Number(m[1]) : null; };
+    const pass = num(/^# pass (\d+)/m);
+    const fail = num(/^# fail (\d+)/m);
 
-  const ok = r.status === 0;
-  metrics.unitFailingCount = failing.length;
-  if (!ok){
-    extra.unitFailing = failing;
-    extra.unitErrors = errLines;
-    extra.unitTail = out.split('\n').slice(-70).join('\n');
+    const failing = [...out.matchAll(/^\s*not ok \d+ - (.+?)\s*$/gm)]
+      .map(m => m[1].trim())
+      .filter(n => !/\.(m|c)?js$/.test(n));
+
+    const errLines = [...out.matchAll(/^\s*(?:error|expected|actual):\s*(.+)$/gm)]
+      .map(m => m[1].trim()).filter(v => v && v !== "'test failed'").slice(0, 4);
+
+    const ok = r.status === 0;
+    metrics.unitFiles = files.length;
+    metrics.unitPass = pass;
+    metrics.unitFail = fail;
+
+    if (!ok){
+      extra.unitFailing = failing;
+      extra.unitErrors = errLines;
+      extra.unitTail = out.split('\n').slice(-70).join('\n');
+    }
+
+    check('01 单元测试全绿', ok,
+          ok ? `${files.length} 个文件 · ${pass} 条通过`
+             : (failing.length ? `挂了 ${failing.length} 条：${failing.slice(0, 3).join(' / ')}`
+                               : `退出码 ${r.status}，未能解析出测试名，见报告里的 unitTail`) +
+               (errLines.length ? ` ｜ ${errLines[0]}` : ''));
+
+    if (!ok) console.log('\n--- 单元测试输出（末尾 70 行）---\n' + extra.unitTail + '\n');
   }
-
-  check('01 单元测试全绿', ok,
-        ok ? '全部通过'
-           : (failing.length ? `挂了 ${failing.length} 条：${failing.slice(0, 3).join(' / ')}`
-                             : `退出码 ${r.status}，未能解析出测试名，见报告里的 unitTail`) +
-             (errLines.length ? ` ｜ ${errLines[0]}` : ''));
-
-  if (!ok) console.log('\n--- 单元测试输出（末尾 70 行）---\n' + extra.unitTail + '\n');
 }
 
 /* --- 02 确定性 --- */
@@ -224,8 +245,8 @@ fs.writeFileSync(path.join(ART, 'verify-report.json'), JSON.stringify(report, nu
 
 console.log('\n' + '-'.repeat(66));
 console.log(`  ${report.passed} / ${report.total} 项通过` +
+            `   ·   单测 ${metrics.unitPass ?? '?'} 条` +
             `   ·   中位高度 ${metrics.medianScore}` +
-            `   ·   ${metrics.totalJumps} 次跳跃` +
             `   ·   5min 模拟 ${metrics.perfMs}ms`);
 console.log('-'.repeat(66));
 

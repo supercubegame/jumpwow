@@ -62,6 +62,7 @@ jobs:
               const m = r.metrics || {};
               body += `| 项 | 值 |\n| --- | --- |\n`;
               body += `| 通过 | ${r.passed} / ${r.total} |\n`;
+              body += `| 单元测试 | ${m.unitPass ?? '?'} 条（${m.unitFiles} 个文件）|\n`;
               body += `| 机器人试玩 | ${m.seeds} 局 × ${m.surviveSec}s |\n`;
               body += `| 高度中位数 | ${m.medianScore}（${m.minScore} - ${m.maxScore}）|\n`;
               body += `| 累计跳跃 | ${m.totalJumps} |\n`;
