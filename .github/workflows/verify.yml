@@ -76,9 +76,10 @@ jobs:
               if (r.unitFailing && r.unitFailing.length) {
                 body += `\n**挂掉的单元测试**\n\n`;
                 for (const t of r.unitFailing) body += `- \`${t}\`\n`;
-                if (r.unitErrors && r.unitErrors.length) {
-                  body += `\n\`\`\`\n${r.unitErrors.join('\n')}\n\`\`\`\n`;
-                }
+              }
+              if (r.unitTail) {
+                body += `\n<details><summary>测试输出末尾</summary>\n\n\`\`\`\n` +
+                        r.unitTail.slice(-3500) + `\n\`\`\`\n</details>\n`;
               }
               if (r.deaths && r.deaths.length) {
                 body += `\n**摔死的局**\n\n| seed | 存活 | 得分 | 跳跃 |\n| --- | --- | --- | --- |\n`;

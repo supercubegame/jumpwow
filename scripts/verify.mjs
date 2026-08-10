@@ -9,7 +9,7 @@
  *   失败 → exit 1，逐项列出失败原因，并写出 artifacts/verify-report.json
  *
  * 报告要自带足够的线索。读报告的人（或 agent）通常拿不到 CI 的原始日志,
- * 所以失败原因必须写在报告里，而不是只留一个「失败 1 项」。
+ * 所以失败原因必须写进报告，而不是只留一个「失败 1 项」。
  *
  * 用法：
  *   npm run verify
@@ -42,30 +42,35 @@ const extra = {};
 
 /* --- 01 单元测试 --- */
 {
-  const r = spawnSync(process.execPath, ['--test', 'test/'], { encoding: 'utf8' });
+  // 显式指定 tap，否则 reporter 会随是否 TTY 变化，解析逻辑跟着漂
+  const r = spawnSync(process.execPath,
+                      ['--test', '--test-reporter=tap', 'test/'],
+                      { encoding: 'utf8' });
   const out = ((r.stdout || '') + (r.stderr || '')).replace(/\r/g, '');
 
-  // 目录模式下顶层统计的是「文件」，所以要自己捞具体是哪条测试挂了。
-  const failing = [...out.matchAll(/^ *not ok \d+ - (.+)$/gm)]
+  // 目录模式下顶层统计的是「文件」和「目录」，得自己捞具体挂了哪条测试
+  const failing = [...out.matchAll(/^\s*not ok \d+ - (.+?)\s*$/gm)]
     .map(m => m[1].trim())
-    .filter(n => !n.endsWith('.js'));
-  const errLines = [...out.matchAll(/^ *(?:error|expected|actual|code):\s*(.+)$/gm)]
-    .map(m => m[1].trim()).slice(0, 4);
+    .filter(n => !/\.(m|c)?js$/.test(n) && n !== 'test' && n !== 'test/');
+
+  const errLines = [...out.matchAll(/^\s*(?:error|expected|actual):\s*(.+)$/gm)]
+    .map(m => m[1].trim()).filter(v => v && v !== "'test failed'").slice(0, 4);
 
   const ok = r.status === 0;
-  metrics.unitFailing = failing.length;
+  metrics.unitFailingCount = failing.length;
   if (!ok){
     extra.unitFailing = failing;
     extra.unitErrors = errLines;
-    extra.unitTail = out.split('\n').slice(-60).join('\n');
+    extra.unitTail = out.split('\n').slice(-70).join('\n');
   }
 
   check('01 单元测试全绿', ok,
         ok ? '全部通过'
-           : `挂了 ${failing.length} 条：${failing.slice(0, 3).join(' / ')}` +
+           : (failing.length ? `挂了 ${failing.length} 条：${failing.slice(0, 3).join(' / ')}`
+                             : `退出码 ${r.status}，未能解析出测试名，见报告里的 unitTail`) +
              (errLines.length ? ` ｜ ${errLines[0]}` : ''));
 
-  if (!ok) console.log('\n--- 单元测试输出（末尾 60 行）---\n' + extra.unitTail + '\n');
+  if (!ok) console.log('\n--- 单元测试输出（末尾 70 行）---\n' + extra.unitTail + '\n');
 }
 
 /* --- 02 确定性 --- */
