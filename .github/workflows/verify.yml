@@ -15,21 +15,19 @@ permissions:
   pull-requests: write
 
 jobs:
+  # 引擎闸门：零依赖，什么都不装，二十秒出结果。
+  # 绝大多数改动只需要看这一个,保持它快是有意义的。
   gate:
-    name: 验证闸门
+    name: 引擎闸门
     runs-on: ubuntu-latest
     timeout-minutes: 6
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      # 零依赖，没有 npm install 这一步
-
-      - name: 跑验证闸门
+      - name: 跑引擎闸门
         id: gate
         continue-on-error: true
         run: npm run verify
@@ -43,57 +41,110 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      # agent 读不到 Actions 日志，但读得到 PR 评论。这一步是闭环的关键，
-      # 所以失败细节必须尽量塞进这条评论里。
-      - name: 回报结果到 PR
-        if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+      - name: 失败则让 job 失败
+        if: steps.gate.outcome != 'success'
+        run: exit 1
+
+  # 浏览器闸门：要装 Playwright，慢一分钟，只在这里承担。
+  web:
+    name: 浏览器闸门
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 装依赖
+        run: npm install --no-audit --no-fund
+
+      - name: 装 Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: 跑浏览器闸门
+        id: web
+        continue-on-error: true
+        run: npm run verify:web
+
+      - name: 上传截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-web-artifacts
+          path: artifacts/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: 失败则让 job 失败
+        if: steps.web.outcome != 'success'
+        run: exit 1
+
+  # 汇总回写 PR 评论。
+  # agent 读不到 Actions 日志，但读得到 PR 评论,这一步是闭环的关键。
+  report:
+    name: 回报到 PR
+    runs-on: ubuntu-latest
+    needs: [gate, web]
+    if: always() && github.event_name == 'pull_request'
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: verify-report
+          path: eng/
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: verify-web-artifacts
+          path: web/
+
+      - uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const ok = '${{ steps.gate.outcome }}' === 'success';
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const runUrl = context.serverUrl + '/' + context.repo.owner + '/' +
+                           context.repo.repo + '/actions/runs/' + context.runId;
+            const engOk = '${{ needs.gate.result }}' === 'success';
+            const webOk = '${{ needs.web.result }}' === 'success';
 
-            let body = `## 验证闸门 ${ok ? '通过' : '失败'}\n\n`;
-            body += `提交 \`${context.sha.slice(0,7)}\` · [完整日志](${runUrl})\n\n`;
+            const read = p => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return null; } };
+            const eng = read('eng/verify-report.json');
+            const web = read('web/verify-web-report.json');
 
-            try {
-              const r = JSON.parse(fs.readFileSync('artifacts/verify-report.json', 'utf8'));
-              const m = r.metrics || {};
-              body += `| 项 | 值 |\n| --- | --- |\n`;
-              body += `| 通过 | ${r.passed} / ${r.total} |\n`;
-              body += `| 单元测试 | ${m.unitPass ?? '?'} 条（${m.unitFiles} 个文件）|\n`;
-              body += `| 机器人试玩 | ${m.seeds} 局 × ${m.surviveSec}s |\n`;
-              body += `| 高度中位数 | ${m.medianScore}（${m.minScore} - ${m.maxScore}）|\n`;
-              body += `| 累计跳跃 | ${m.totalJumps} |\n`;
-              body += `| 最大平台间距 | ${m.worstGap} |\n`;
-              body += `| 活跃平台 | ${m.platformsLive}（累计生成 ${m.platformsGenerated}）|\n`;
-              body += `| 5min 模拟耗时 | ${m.perfMs} ms |\n`;
+            let body = '## 验证闸门 ' + (engOk && webOk ? '全部通过' : '有失败') + '\n\n';
+            body += '提交 `' + context.sha.slice(0, 7) + '` · [完整日志](' + runUrl + ')\n\n';
+            body += '| 闸门 | 结果 |\n| --- | --- |\n';
+            body += '| 引擎 | ' + (engOk ? '通过' : '失败') + ' ' + (eng ? '(' + eng.passed + '/' + eng.total + ')' : '') + ' |\n';
+            body += '| 浏览器 | ' + (webOk ? '通过' : '失败') + ' ' + (web ? '(' + web.passed + '/' + web.total + ')' : '') + ' |\n';
 
-              if (r.failures && r.failures.length) {
-                body += `\n**失败项**\n\n`;
-                for (const f of r.failures) body += `- ${f}\n`;
-              }
-              if (r.unitFailing && r.unitFailing.length) {
-                body += `\n**挂掉的单元测试**\n\n`;
-                for (const t of r.unitFailing) body += `- \`${t}\`\n`;
-              }
-              if (r.unitTail) {
-                body += `\n<details><summary>测试输出末尾</summary>\n\n\`\`\`\n` +
-                        r.unitTail.slice(-3500) + `\n\`\`\`\n</details>\n`;
-              }
-              if (r.deaths && r.deaths.length) {
-                body += `\n**摔死的局**\n\n| seed | 存活 | 得分 | 跳跃 |\n| --- | --- | --- | --- |\n`;
-                for (const d of r.deaths.slice(0, 8)) {
-                  body += `| ${d.seed} | ${d.sec}s | ${d.score} | ${d.jumps} |\n`;
-                }
-              }
-            } catch (e) {
-              body += `**没有生成 verify-report.json**,脚本在产出报告之前就挂了。`;
-              body += ` 去 [完整日志](${runUrl}) 看 stderr。\n`;
+            if (eng) {
+              const m = eng.metrics || {};
+              body += '\n**引擎**\n\n';
+              body += '- 单元测试 ' + (m.unitPass == null ? '?' : m.unitPass) + ' 条\n';
+              body += '- 机器人 ' + m.seeds + ' 局 × ' + m.surviveSec + 's，高度中位 ' + m.medianScore + '（' + m.minScore + '-' + m.maxScore + '）\n';
+              body += '- 最大平台间距 ' + m.worstGap + '，活跃平台 ' + m.platformsLive + '\n';
+              body += '- 5min 模拟 ' + m.perfMs + ' ms\n';
+            }
+            if (web) {
+              const m = web.metrics || {};
+              body += '\n**浏览器**\n\n';
+              body += '- 约 ' + m.fps + ' fps，画面采样颜色 ' + m.menuColors + ' → ' + m.playColors + ' 种\n';
+              body += '- 机器人在浏览器里 高度 ' + m.botScore + ' · 跳跃 ' + m.botJumps + '\n';
             }
 
-            body += `\n<!-- verify-gate -->`;
+            const fails = [].concat(eng ? eng.failures : [], web ? web.failures : []).filter(Boolean);
+            if (fails.length) {
+              body += '\n**失败项**\n\n';
+              for (const f of fails) body += '- ' + f + '\n';
+            }
+            if (eng && eng.unitTail) {
+              body += '\n<details><summary>单元测试输出末尾</summary>\n\n```\n' +
+                      eng.unitTail.slice(-3000) + '\n```\n</details>\n';
+            }
+
+            body += '\n<!-- verify-gate -->';
 
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner, repo: context.repo.repo,
@@ -111,7 +162,3 @@ jobs:
                 issue_number: context.issue.number, body,
               });
             }
-
-      - name: 闸门失败则让 job 失败
-        if: steps.gate.outcome != 'success'
-        run: exit 1
