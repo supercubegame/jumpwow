@@ -1,15 +1,20 @@
 {
   "name": "jumpwow",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "无限向上跳跃游戏。纯 Node.js，零运行时依赖，终端可玩。",
+  "description": "无限向上跳跃游戏。同一份纯引擎同时驱动终端与浏览器 canvas。",
   "bin": { "jumpwow": "bin/jumpwow.js" },
   "scripts": {
     "start": "node bin/jumpwow.js",
+    "serve": "node scripts/serve.mjs",
     "test": "node --test test/*.test.js",
     "verify": "node scripts/verify.mjs",
-    "check": "node scripts/verify.mjs"
+    "verify:web": "node scripts/verify-web.mjs",
+    "setup:browser": "playwright install --with-deps chromium"
+  },
+  "devDependencies": {
+    "playwright": "1.49.1"
   },
   "engines": { "node": ">=20" }
 }
