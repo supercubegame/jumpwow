@@ -8,6 +8,9 @@
  *   通过 → exit 0
  *   失败 → exit 1，逐项列出失败原因，并写出 artifacts/verify-report.json
  *
+ * 报告要自带足够的线索。读报告的人（或 agent）通常拿不到 CI 的原始日志,
+ * 所以失败原因必须写在报告里，而不是只留一个「失败 1 项」。
+ *
  * 用法：
  *   npm run verify
  *   SEEDS=40 SURVIVE_SEC=90 npm run verify     加严
@@ -18,15 +21,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   createGame, step, run, fingerprint, difficultyAt,
-  MAX_JUMP_H, VIEW_H, W, STEP, PLAT,
+  MAX_JUMP_H, W, STEP,
 } from '../src/engine.js';
 import { botInput } from '../src/bot.js';
 
-const SEEDS        = Number(process.env.SEEDS || 24);
-const SURVIVE_SEC  = Number(process.env.SURVIVE_SEC || 60);
-const MIN_SCORE    = Number(process.env.MIN_SCORE || 120);
-const PERF_BUDGET  = Number(process.env.PERF_BUDGET_MS || 2500);
-const ART          = path.resolve('artifacts');
+const SEEDS       = Number(process.env.SEEDS || 24);
+const SURVIVE_SEC = Number(process.env.SURVIVE_SEC || 60);
+const MIN_SCORE   = Number(process.env.MIN_SCORE || 120);
+const PERF_BUDGET = Number(process.env.PERF_BUDGET_MS || 2500);
+const ART         = path.resolve('artifacts');
 
 const checks = [];
 function check(name, ok, detail = ''){
@@ -35,18 +38,34 @@ function check(name, ok, detail = ''){
 }
 
 const metrics = {};
+const extra = {};
 
 /* --- 01 单元测试 --- */
 {
   const r = spawnSync(process.execPath, ['--test', 'test/'], { encoding: 'utf8' });
-  const out = (r.stdout || '') + (r.stderr || '');
-  const pass = (out.match(/^# pass (\d+)/m) || [])[1] || '?';
-  const fail = (out.match(/^# fail (\d+)/m) || [])[1] || '?';
-  check('01 单元测试全绿', r.status === 0, `pass ${pass} · fail ${fail}`);
-  if (r.status !== 0){
-    console.log('\n--- 单元测试输出 ---\n' + out.split('\n').slice(-45).join('\n'));
+  const out = ((r.stdout || '') + (r.stderr || '')).replace(/\r/g, '');
+
+  // 目录模式下顶层统计的是「文件」，所以要自己捞具体是哪条测试挂了。
+  const failing = [...out.matchAll(/^ *not ok \d+ - (.+)$/gm)]
+    .map(m => m[1].trim())
+    .filter(n => !n.endsWith('.js'));
+  const errLines = [...out.matchAll(/^ *(?:error|expected|actual|code):\s*(.+)$/gm)]
+    .map(m => m[1].trim()).slice(0, 4);
+
+  const ok = r.status === 0;
+  metrics.unitFailing = failing.length;
+  if (!ok){
+    extra.unitFailing = failing;
+    extra.unitErrors = errLines;
+    extra.unitTail = out.split('\n').slice(-60).join('\n');
   }
-  metrics.unitPass = Number(pass) || 0;
+
+  check('01 单元测试全绿', ok,
+        ok ? '全部通过'
+           : `挂了 ${failing.length} 条：${failing.slice(0, 3).join(' / ')}` +
+             (errLines.length ? ` ｜ ${errLines[0]}` : ''));
+
+  if (!ok) console.log('\n--- 单元测试输出（末尾 60 行）---\n' + extra.unitTail + '\n');
 }
 
 /* --- 02 确定性 --- */
@@ -92,7 +111,7 @@ const metrics = {};
     step(s, botInput(s));
     const p = s.player;
     if (![p.x, p.y, p.vx, p.vy, s.cam, s.maxY].every(Number.isFinite)) bad = `第 ${i} 步出现非有限值`;
-    if (p.x < 0 || p.x >= W) bad = `第 ${i} 步 x=${p.x} 越出环形world`;
+    if (p.x < 0 || p.x >= W) bad = `第 ${i} 步 x=${p.x} 越出环形世界`;
   }
   check('05 无 NaN / 无坐标越界', !bad, bad || '8000 步内数值健康');
 }
@@ -126,22 +145,26 @@ const metrics = {};
   }
   metrics.botWallMs = Math.round(performance.now() - t0);
 
-  const died  = runs.filter(r => !r.alive);
+  const died   = runs.filter(r => !r.alive);
   const scores = runs.map(r => r.score).sort((a, b) => a - b);
   const median = scores[scores.length >> 1];
   const totalJumps = runs.reduce((a, r) => a + r.jumps, 0);
   metrics.medianScore = median;
+  metrics.minScore = scores[0];
+  metrics.maxScore = scores[scores.length - 1];
   metrics.totalJumps = totalJumps;
   metrics.seeds = SEEDS;
   metrics.surviveSec = SURVIVE_SEC;
+  if (died.length) extra.deaths = died;
 
   check('07 机器人在所有种子上都活满全程', died.length === 0,
         died.length
-          ? `${died.length}/${SEEDS} 局摔死，例如 seed ${died[0].seed} 撑了 ${died[0].sec}s 得分 ${died[0].score}`
+          ? `${died.length}/${SEEDS} 局摔死：` +
+            died.slice(0, 3).map(d => `seed ${d.seed} 撑 ${d.sec}s 得分 ${d.score}`).join(' / ')
           : `${SEEDS} 局 × ${SURVIVE_SEC}s 全部存活`);
 
   check('08 高度中位数达标', median >= MIN_SCORE,
-        `中位 ${median} / 门槛 ${MIN_SCORE}，最低 ${scores[0]}，最高 ${scores[scores.length - 1]}`);
+        `中位 ${median} / 门槛 ${MIN_SCORE}，区间 ${scores[0]}-${scores[scores.length - 1]}`);
 
   check('09 特殊平台确实被用到', runs.some(r => r.springs > 0) && runs.some(r => r.broken > 0),
         `累计 ${totalJumps} 次跳跃，弹簧 ${runs.reduce((a, r) => a + r.springs, 0)} 次，` +
@@ -176,7 +199,7 @@ const metrics = {};
   try { parsed = JSON.parse(r.stdout); } catch {}
   check('12 CLI 无头模式正常退出', r.status === 0 && parsed && parsed.survived === true,
         parsed ? `退出码 ${r.status} · 得分 ${parsed.score} · ${parsed.wallMs}ms`
-               : `退出码 ${r.status} · 输出无法解析：${(r.stderr || r.stdout || '').slice(0, 160)}`);
+               : `退出码 ${r.status} · 输出无法解析：${(r.stderr || r.stdout || '').slice(0, 200)}`);
 }
 
 /* ----------------------------- 汇总 ----------------------------- */
@@ -188,6 +211,7 @@ const report = {
   total: checks.length,
   metrics,
   failures: failed.map(f => `${f.name}: ${f.detail}`),
+  ...extra,
 };
 
 fs.mkdirSync(ART, { recursive: true });

@@ -58,6 +58,15 @@ export function wrapDelta(a, b){
 /** 难度随最高高度线性爬升，400 单位后打满。 */
 export const difficultyAt = maxY => clamp(maxY / 400, 0, 1);
 
+/**
+ * 移动平台在任意时刻的横坐标。
+ * 机器人靠它预判落点,瞄当前位置是不够的，等落下去平台早荡走了。
+ */
+export function platformXAt(pl, time){
+  if (pl.type !== PLAT.MOVING) return pl.x;
+  return wrap(pl.baseX + Math.sin(time * pl.speed + pl.phase) * pl.amp);
+}
+
 /* ----------------------------- 平台生成 ----------------------------- */
 
 let _pid = 0;
@@ -84,9 +93,13 @@ function makePlatform(x, y, type, rnd){
  *                 按 MOVE_V 只能横移 11 出头，留了余量
  */
 function growOne(s){
-  const last = s.platforms[s.platforms.length - 1];
-  const d    = difficultyAt(s.maxY);
-  const rnd  = s.rnd;
+  // 兜底锚点：极端情况下平台可能被全部裁掉，这时从相机高度重新长起来。
+  const last = s.platforms.length
+    ? s.platforms[s.platforms.length - 1]
+    : { x: W / 2, y: s.cam };
+
+  const d   = difficultyAt(s.maxY);
+  const rnd = s.rnd;
 
   const gap = lerp(2.6, 3.4, d) + rnd() * lerp(0.7, 1.0, d);
   const y   = last.y + gap;
@@ -99,9 +112,9 @@ function growOne(s){
     const r = rnd();
     const pFragile = lerp(0, 0.18, d);
     const pMoving  = lerp(0, 0.22, d);
-    if (r < 0.07)                              type = PLAT.SPRING;
+    if (r < 0.07)                                   type = PLAT.SPRING;
     else if (r < 0.07 + pFragile && !s.lastFragile) type = PLAT.FRAGILE;
-    else if (r < 0.07 + pFragile + pMoving)    type = PLAT.MOVING;
+    else if (r < 0.07 + pFragile + pMoving)         type = PLAT.MOVING;
   }
   s.lastFragile = type === PLAT.FRAGILE;       // 不连着出易碎，太劝退
 
@@ -112,7 +125,10 @@ function growOne(s){
 /** 保证相机上方始终有余量，并裁掉已经落在视野下方的平台。 */
 function maintain(s){
   const top = s.cam + VIEW_H + 12;
-  while (s.platforms[s.platforms.length - 1].y < top) growOne(s);
+  let guard = 0;
+  while ((!s.platforms.length || s.platforms[s.platforms.length - 1].y < top) && guard++ < 4096){
+    growOne(s);
+  }
 
   const floor = s.cam - 6;
   let cut = 0;
@@ -170,7 +186,7 @@ export function step(s, input){
   /* --- 移动平台。必须在碰撞之前更新，否则玩家会落在上一帧的位置 --- */
   for (const pl of s.platforms){
     if (pl.type !== PLAT.MOVING || pl.broken) continue;
-    pl.x = wrap(pl.baseX + Math.sin(s.time * pl.speed + pl.phase) * pl.amp);
+    pl.x = platformXAt(pl, s.time);
   }
 
   /* --- 纵向。用「跨越检测」而不是「重叠检测」，高速下落不会穿板 --- */

@@ -43,7 +43,8 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      # agent 读不到 Actions 日志，但读得到 PR 评论。这一步是闭环的关键。
+      # agent 读不到 Actions 日志，但读得到 PR 评论。这一步是闭环的关键，
+      # 所以失败细节必须尽量塞进这条评论里。
       - name: 回报结果到 PR
         if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -61,16 +62,29 @@ jobs:
               const m = r.metrics || {};
               body += `| 项 | 值 |\n| --- | --- |\n`;
               body += `| 通过 | ${r.passed} / ${r.total} |\n`;
-              body += `| 单元测试 | ${m.unitPass} 条 |\n`;
               body += `| 机器人试玩 | ${m.seeds} 局 × ${m.surviveSec}s |\n`;
-              body += `| 高度中位数 | ${m.medianScore} |\n`;
+              body += `| 高度中位数 | ${m.medianScore}（${m.minScore} - ${m.maxScore}）|\n`;
               body += `| 累计跳跃 | ${m.totalJumps} |\n`;
               body += `| 最大平台间距 | ${m.worstGap} |\n`;
               body += `| 活跃平台 | ${m.platformsLive}（累计生成 ${m.platformsGenerated}）|\n`;
               body += `| 5min 模拟耗时 | ${m.perfMs} ms |\n`;
+
               if (r.failures && r.failures.length) {
                 body += `\n**失败项**\n\n`;
                 for (const f of r.failures) body += `- ${f}\n`;
+              }
+              if (r.unitFailing && r.unitFailing.length) {
+                body += `\n**挂掉的单元测试**\n\n`;
+                for (const t of r.unitFailing) body += `- \`${t}\`\n`;
+                if (r.unitErrors && r.unitErrors.length) {
+                  body += `\n\`\`\`\n${r.unitErrors.join('\n')}\n\`\`\`\n`;
+                }
+              }
+              if (r.deaths && r.deaths.length) {
+                body += `\n**摔死的局**\n\n| seed | 存活 | 得分 | 跳跃 |\n| --- | --- | --- | --- |\n`;
+                for (const d of r.deaths.slice(0, 8)) {
+                  body += `| ${d.seed} | ${d.sec}s | ${d.score} | ${d.jumps} |\n`;
+                }
               }
             } catch (e) {
               body += `**没有生成 verify-report.json**,脚本在产出报告之前就挂了。`;
