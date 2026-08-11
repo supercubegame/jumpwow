@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write          # commit 评论需要写权限
   pull-requests: write
 
 jobs:
@@ -80,13 +80,16 @@ jobs:
         if: steps.web.outcome != 'success'
         run: exit 1
 
-  # 汇总回写 PR 评论。
-  # agent 读不到 Actions 日志，但读得到 PR 评论,这一步是闭环的关键。
+  # 汇总回写。
+  #
+  # 这一步是整条闭环的关键：agent 读不到 Actions 的原始日志，但读得到
+  # PR 评论和 commit 评论。所以两条路都要通,只挂在 pull_request 上的话，
+  # 直接 push 到 main 时报告就没地方去了。
   report:
-    name: 回报到 PR
+    name: 回报结果
     runs-on: ubuntu-latest
     needs: [gate, web]
-    if: always() && github.event_name == 'pull_request'
+    if: always()
     steps:
       - uses: actions/download-artifact@v4
         continue-on-error: true
@@ -146,19 +149,43 @@ jobs:
 
             body += '\n<!-- verify-gate -->';
 
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner, repo: context.repo.repo,
-              issue_number: context.issue.number, per_page: 100,
-            });
-            const prev = comments.find(c => c.body && c.body.includes('<!-- verify-gate -->'));
-            if (prev) {
-              await github.rest.issues.updateComment({
+            const pr = context.payload.pull_request;
+
+            if (pr) {
+              // 有 PR：更新同一条评论，不刷屏
+              const { data: comments } = await github.rest.issues.listComments({
                 owner: context.repo.owner, repo: context.repo.repo,
-                comment_id: prev.id, body,
+                issue_number: pr.number, per_page: 100,
               });
+              const prev = comments.find(c => c.body && c.body.includes('<!-- verify-gate -->'));
+              if (prev) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  comment_id: prev.id, body,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: pr.number, body,
+                });
+              }
             } else {
-              await github.rest.issues.createComment({
+              // 没有 PR（直接 push 到分支或 main）：写 commit 评论。
+              // agent 拿着 commit SHA 就能读到，不需要知道 PR 号。
+              await github.rest.repos.createCommitComment({
                 owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: context.issue.number, body,
+                commit_sha: context.sha, body,
               });
             }
+
+            core.info('报告已送达。');
+
+      # 回写失败必须让 job 红。
+      # 以前这一步是静默的,权限配错的话，你会以为一切正常，
+      # 实际上 agent 早就什么都看不到了。监控自己坏掉却没人知道，
+      # 比被监控的东西坏掉更危险。
+      - name: 送达失败视为闸门失败
+        if: failure()
+        run: |
+          echo "报告没能回写。agent 读不到结果，等于整条闭环断了。"
+          exit 1
