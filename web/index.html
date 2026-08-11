@@ -529,18 +529,39 @@ el.btnLink.onclick = async () => {
   }
 };
 
-/** 画一张 1200x630 的分享图。种子写在上面,别人打开链接就是同一张图。 */
-function drawCard(){
-  const g = el.card.getContext('2d');
-  const Wc = el.card.width, Hc = el.card.height;
-  const s = game;
-  const sky = skyAt(s ? s.maxY : 0);
+/* 分享图的「底」：渐变天色 + 压暗层。这两笔和这局玩得怎么样完全无关，
+   任何情况下都会铺满整张画布。
 
+   抽成两个函数不是为了复用，是为了让闸门能单独把这层底再画一遍当基线,
+   拿基线和真卡片逐像素比，差出来的才是「内容」。以前那条断言读的是
+   卡片正中心那个点是否非透明，而这层底保证了它永远非透明,标题、分数、
+   平台一个都没画，它也照样绿。 */
+function paintCardSky(g, Wc, Hc, sky){
   const bg = g.createLinearGradient(0, 0, 0, Hc);
   bg.addColorStop(0, rgb(sky.top));
   bg.addColorStop(1, rgb(sky.bot));
   g.fillStyle = bg;
   g.fillRect(0, 0, Wc, Hc);
+}
+
+function paintCardVeil(g, Wc, Hc){
+  g.fillStyle = 'rgba(10,14,30,.42)';
+  g.fillRect(0, 0, Wc, Hc);
+}
+
+/* 上次画卡片用的天色。基线必须用同一份,玩家一直在往上爬，隔几帧再算
+   一次 skyAt 会得到另一片天，整张图都对不上，「内容像素」就成了噪声。 */
+let cardSkySnap = null;
+
+/** 画一张 1200x630 的分享图。种子写在上面,别人打开链接就是同一张图。 */
+function drawCard(){
+  const g = el.card.getContext('2d', { willReadFrequently: true });
+  const Wc = el.card.width, Hc = el.card.height;
+  const s = game;
+  const sky = skyAt(s ? s.maxY : 0);
+
+  cardSkySnap = sky;
+  paintCardSky(g, Wc, Hc, sky);
 
   if (s){
     g.globalAlpha = 0.28;
@@ -553,8 +574,7 @@ function drawCard(){
     g.globalAlpha = 1;
   }
 
-  g.fillStyle = 'rgba(10,14,30,.42)';
-  g.fillRect(0, 0, Wc, Hc);
+  paintCardVeil(g, Wc, Hc);
 
   const pad = 72;
   g.textBaseline = 'alphabetic';
@@ -788,10 +808,37 @@ window.__DIAG__ = {
   start(seed){ begin(seed); return true; },
   setName(n){ try{ localStorage.setItem('jumpwow.name', n); }catch(e){} el.nameIn.value = n; return true; },
   makeCard(){ drawCard(); el.card.classList.add('show'); return true; },
+  /* 保留：铁律 5 说字段只增不删。但别再拿它当「卡片画出来了」的证据,
+     背景铺满整张画布，中心点必然不透明，这条永远为真。用 cardInk()。 */
   get cardDrawn(){
     const g = el.card.getContext('2d');
     const d = g.getImageData(el.card.width >> 1, el.card.height >> 1, 1, 1).data;
     return d[3] > 0 && (d[0] + d[1] + d[2]) > 0;
+  },
+  /* 卡片上「不是背景」的像素有多少。
+
+     把同一片底（渐变天色 + 压暗层，用画卡片那一刻的天色快照）画到离屏
+     canvas 上，再和真卡片逐像素比。底是无条件画的，所以差异只可能来自
+     平台、190px 的大分数和那几行文案,内容一个字没画，这个数就是 0。
+     这才是「画出来了」和「没画」能被区分开的度量。 */
+  cardInk(){
+    if (!cardSkySnap) return { ink: 0, pixels: 0, ratio: 0, drawn: false };
+    const w = el.card.width, h = el.card.height;
+    const off = document.createElement('canvas');
+    off.width = w; off.height = h;
+    const og = off.getContext('2d', { willReadFrequently: true });
+    paintCardSky(og, w, h, cardSkySnap);
+    paintCardVeil(og, w, h);
+    const a = el.card.getContext('2d').getImageData(0, 0, w, h).data;
+    const b = og.getImageData(0, 0, w, h).data;
+    let ink = 0;
+    for (let i = 0; i < a.length; i += 4){
+      // 12 是抗锯齿和渐变量化的噪声地板，不是「像不像」的阈值
+      const d = Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+      if (d > 12) ink++;
+    }
+    const pixels = w * h;
+    return { ink, pixels, ratio: Math.round((ink / pixels) * 10000) / 10000, drawn: true };
   },
   sampleColors(){
     const n = 20, set = new Set();
