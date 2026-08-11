@@ -1,42 +1,61 @@
 # JUMPWOW — Agent 说明
 
-无限向上跳跃游戏。纯 Node.js，零运行时依赖，终端可玩。
+无限向上跳跃游戏。同一份纯引擎驱动终端、浏览器 canvas 和服务端重放。
 `CLAUDE.md` 是同内容副本，改动请同步两份。
 
 ## 铁律
 
 1. **改完必须跑 `npm run verify`，返回 0 才算完成。** 红了自己读
    `artifacts/verify-report.json` 修，别把没验证的改动交出去。
-2. **`src/engine.js` 必须保持纯净。** 不读文件、不碰终端、不用 `Date.now`、
-   不用 `Math.random`。整套可测试性建立在「同种子同输入必然同结果」上，
-   一旦混进外部状态，闸门立刻失去意义。
-3. **零运行时依赖。** `package.json` 里不许出现 `dependencies`。
+   动了 `web/` 就再跑 `npm run verify:web`。
+2. **`src/engine.js` 和 `src/replay.js` 必须保持纯净。** 不读文件、不碰终端
+   或 DOM、不用 `Date.now`、不用 `Math.random`。整套东西建立在
+   「同种子同输入必然同结果」上：闸门靠它，排行榜反作弊也靠它。
+   往里面塞一个时间戳，第 14 条断言立刻红,那是好事，别去改断言。
+3. **零运行时依赖。** `dependencies` 必须为空，`devDependencies` 只允许 playwright。
 4. **改物理参数必须重跑闸门。** 跳跃高度和平台间距是耦合的，
-   调一个不看另一个，会造出跳不上去的死图。
+   调一个不看另一个会造出跳不上去的死图。
+5. **不要动 `window.__DIAG__` 的字段名。** 浏览器闸门依赖它。加字段可以，删改不行。
 
 ## 结构
 
 ```
 src/engine.js        纯引擎：物理、生成、碰撞、相机、计分
 src/bot.js           无头机器人，用来证明「这游戏能玩」
-src/render.js        终端渲染，只在交互模式下用
+src/replay.js        输入日志编解码 + 重放。同样是纯函数
+src/render.js        终端渲染
 bin/jumpwow.js       CLI 入口：交互 / 观战 / 无头 bench
-test/engine.test.js  单元测试
-scripts/verify.mjs   验证闸门，12 项断言
+web/index.html       浏览器 canvas 渲染器 + 排行榜前端
+server/api.mjs       排行榜 API，零依赖，JSON 文件存储
+scripts/serve.mjs    静态服务 + 挂载 API
+scripts/verify.mjs   引擎闸门，17 项，零依赖，约 20 秒
+scripts/verify-web.mjs 浏览器闸门，13 项，要 playwright，约 1 分半
+test/*.test.js       单元测试
 ```
 
 ## 命令
 
 ```bash
-npm run verify          # 闸门 ← 唯一的完成标准
+npm run verify          # 引擎闸门 ← 主要的完成标准
+npm run verify:web      # 浏览器闸门，动了 web/ 才需要
 npm test                # 只跑单元测试
-npm start               # 自己玩
+npm start               # 终端里玩
+npm run serve           # 起服务，浏览器打开 /web/index.html
 npm start -- --bot      # 看机器人玩
 npm start -- --seed 42  # 指定地图
-npm start -- --bench 60 # 无头跑 60 秒出统计
 
 SEEDS=40 SURVIVE_SEC=90 npm run verify   # 加严
 ```
+
+## 排行榜为什么这么设计
+
+客户端**不上报分数**。它上报「种子 + 每一帧按了什么」，服务端拿同一份引擎
+重放，以重放结果为准。改内存里的 score 毫无意义,服务端根本不看那个字段。
+
+这不是额外加的反作弊机制，而是「引擎是确定性纯函数」这条约束的免费副产品。
+所以第 2 条铁律不能破：破了它，排行榜同时失去意义。
+
+提交的日志用游程编码，一局 60 秒通常只有几百字节。
 
 ## 核心不变量
 
@@ -47,9 +66,10 @@ SEEDS=40 SURVIVE_SEC=90 npm run verify   # 加严
 - **横向可达**：从起跳到落回同高度约 0.6-0.7 秒，按 `MOVE_V` 只能横移 11 出头。
   所以生成的横向偏移上限是 9。调 `MOVE_V` 或 `JUMP_V` 就必须重算这个数。
 - **环形世界**：任何横向距离都要走 `wrapDelta`，直接相减会在接缝处出错。
-- **跨越检测**：碰撞用「上一帧在上方、这一帧在下方」判定，不是重叠判定。
-  这样高速下落不会穿板。别改成 AABB 重叠。
+- **跨越检测**：碰撞用「上一帧在上、这一帧在下」判定，不是 AABB 重叠。
+  这样高速下落不会穿板。别改成重叠判定。
 - **相机只升不降**，平台按相机裁剪，所以平台数组长度有界。
+- **重放一致性**：`replay(seed, log)` 必须和实跑逐字段相同。
 
 ## 为什么有个机器人
 
@@ -65,3 +85,9 @@ SEEDS=40 SURVIVE_SEC=90 npm run verify   # 加严
 - 两空格缩进，ESM，分号结尾。
 - 中文注释，说清「为什么」而不是「做了什么」。
 - 不在用户可见文案里用 em dash（—），部分终端和聊天客户端显示成乱码。
+
+## 协作边界
+
+- 同一时间只有一方能动一条分支。开工前先 `git pull`。
+- 功能走 `feat/*`，修复走 `fix/*`，基建走 `ci/*`。
+- 每条分支对应一个 PR，描述里写清怎么验证。

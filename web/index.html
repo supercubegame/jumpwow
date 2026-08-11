@@ -8,8 +8,10 @@
   :root{
     --ink:   oklch(97% 0.012 265);
     --muted: oklch(72% 0.030 265);
+    --dim:   oklch(58% 0.028 265);
     --line:  oklch(38% 0.035 265);
     --accent:oklch(84% 0.155 88);
+    --gold:  oklch(86% 0.150 92);
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%;overflow:hidden;background:oklch(16% 0.030 265)}
@@ -29,20 +31,17 @@
     aspect-ratio:40 / 22;
     box-shadow:0 40px 90px -30px oklch(8% 0.04 265 / .9);
   }
-  canvas{display:block;width:100%;height:100%}
+  canvas#c{display:block;width:100%;height:100%}
 
   #hud{position:absolute;inset:0;pointer-events:none;font-variant-numeric:tabular-nums}
-
   #score{
     position:absolute;left:20px;top:14px;
     font:800 clamp(26px,4.4vh,44px)/1 ui-monospace,SFMono-Regular,Menlo,monospace;
-    letter-spacing:-.03em;
-    text-shadow:0 2px 14px oklch(12% 0.05 265 / .7);
+    letter-spacing:-.03em;text-shadow:0 2px 14px oklch(12% 0.05 265 / .7);
   }
   #best{
     position:absolute;left:21px;top:calc(14px + clamp(28px,4.6vh,46px));
-    font:600 11px/1 ui-monospace,monospace;
-    letter-spacing:.1em;color:var(--muted);
+    font:600 11px/1 ui-monospace,monospace;letter-spacing:.1em;color:var(--muted);
   }
   #meta{
     position:absolute;right:20px;top:16px;text-align:right;
@@ -51,35 +50,26 @@
   }
 
   .veil{
-    position:absolute;inset:0;z-index:5;
+    position:absolute;inset:0;z-index:5;overflow-y:auto;
     display:grid;place-items:center;text-align:center;
     background:radial-gradient(120% 90% at 50% 40%,
-               oklch(20% 0.04 265 / .55), oklch(13% 0.04 265 / .93));
+               oklch(20% 0.04 265 / .55), oklch(13% 0.04 265 / .94));
     backdrop-filter:blur(7px);
   }
   .veil.hide{display:none}
-  .veil .inner{padding:0 24px;max-width:min(90%, 560px)}
+  .veil .inner{padding:26px 24px;max-width:min(94%, 640px);width:100%}
 
-  h1{
-    font-size:clamp(38px,9vh,84px);font-weight:900;
-    letter-spacing:-.045em;line-height:.92;
-  }
+  h1{font-size:clamp(34px,8vh,76px);font-weight:900;letter-spacing:-.045em;line-height:.92}
   h1 i{font-style:normal;color:var(--accent)}
   .tag{margin-top:10px;font-size:13px;color:var(--muted);line-height:1.75}
 
-  .keys{
-    display:flex;gap:8px;justify-content:center;flex-wrap:wrap;
-    margin:24px 0 26px;font-size:12px;color:var(--muted);
-  }
-  .keys div{
-    border:1px solid var(--line);border-radius:9px;padding:7px 13px;
-    background:oklch(22% 0.03 265 / .6);
-  }
-  kbd{
-    color:var(--ink);font:700 11px/1 ui-monospace,monospace;
-    border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;
-    padding:2px 5px;margin-right:5px;
-  }
+  .keys{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:20px 0 18px;
+        font-size:12px;color:var(--muted)}
+  .keys div{border:1px solid var(--line);border-radius:9px;padding:7px 13px;
+            background:oklch(22% 0.03 265 / .6)}
+  kbd{color:var(--ink);font:700 11px/1 ui-monospace,monospace;
+      border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;
+      padding:2px 5px;margin-right:5px}
 
   button{
     pointer-events:auto;cursor:pointer;
@@ -91,17 +81,67 @@
   }
   button:hover{transform:translateY(-2px)}
   button:active{transform:translateY(0)}
+  button.ghost{
+    background:transparent;color:var(--ink);
+    border:1px solid var(--line);box-shadow:none;
+    padding:13px 24px;font-size:13px;
+  }
+  button.ghost:hover{border-color:var(--accent);color:var(--accent)}
+  button[disabled]{opacity:.4;cursor:not-allowed;transform:none}
+  .row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;align-items:center}
 
-  .stats{display:flex;gap:26px;justify-content:center;margin:22px 0 26px}
+  input[type=text]{
+    pointer-events:auto;
+    background:oklch(22% 0.03 265 / .8);border:1px solid var(--line);
+    color:var(--ink);border-radius:10px;padding:13px 16px;
+    font:600 14px/1 inherit;width:190px;text-align:center;
+    outline:none;transition:border-color .12s;
+  }
+  input[type=text]:focus{border-color:var(--accent)}
+  input[type=text]::placeholder{color:var(--dim)}
+
+  .stats{display:flex;gap:26px;justify-content:center;margin:20px 0 20px}
   .stats div{font:600 10px/1.7 ui-monospace,monospace;letter-spacing:.1em;color:var(--muted)}
   .stats b{display:block;font-size:26px;font-weight:800;color:var(--ink);letter-spacing:-.02em}
 
-  .hint{margin-top:20px;font:600 10px/1.6 ui-monospace,monospace;color:var(--muted);opacity:.65}
+  .hint{margin-top:16px;font:600 10px/1.7 ui-monospace,monospace;color:var(--dim)}
+  .hint.warn{color:oklch(75% 0.13 45)}
+  .hint.good{color:oklch(80% 0.13 155)}
+
+  /* ---------- 排行榜 ---------- */
+  .board{
+    margin:22px auto 0;text-align:left;max-width:420px;
+    border:1px solid var(--line);border-radius:14px;overflow:hidden;
+    background:oklch(19% 0.03 265 / .7);
+  }
+  .board h3{
+    font:700 10px/1 ui-monospace,monospace;letter-spacing:.2em;
+    color:var(--dim);padding:13px 16px 11px;
+    border-bottom:1px solid var(--line);display:flex;justify-content:space-between;
+  }
+  .board ol{list-style:none;max-height:min(38vh,260px);overflow-y:auto}
+  .board li{
+    display:grid;grid-template-columns:26px 1fr auto;gap:12px;align-items:baseline;
+    padding:9px 16px;font-size:13px;border-top:1px solid oklch(28% 0.03 265 / .5);
+  }
+  .board li:first-child{border-top:0}
+  .board li .rk{font:700 11px/1 ui-monospace,monospace;color:var(--dim);text-align:right}
+  .board li .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .board li .sc{font:700 14px/1 ui-monospace,monospace;font-variant-numeric:tabular-nums}
+  .board li.top .rk,.board li.top .sc{color:var(--gold)}
+  .board li.me{background:oklch(26% 0.05 88 / .35)}
+  .board li.me .nm::after{content:' ← 你';color:var(--accent);font-size:11px}
+  .board .empty{padding:22px 16px;text-align:center;color:var(--dim);font-size:12px}
+
+  #card{display:none;margin:18px auto 0;max-width:100%;border-radius:12px;
+        border:1px solid var(--line)}
+  #card.show{display:block}
 
   @media (max-width:560px){
     #score{left:14px;top:10px}
     #best{left:15px}
     #meta{right:14px;top:12px}
+    .veil .inner{padding:20px 16px}
   }
 </style>
 </head>
@@ -116,6 +156,7 @@
     <div id="meta"></div>
   </div>
 
+  <!-- 开始 -->
   <div id="start" class="veil">
     <div class="inner">
       <h1>JUMP<i>WOW</i></h1>
@@ -125,21 +166,40 @@
         <div><kbd>A</kbd><kbd>D</kbd> 或方向键</div>
         <div>手机点屏幕左右半边</div>
       </div>
-      <button id="btnStart">开 始</button>
-      <div class="hint">同一个种子永远是同一张图</div>
+      <div class="row">
+        <input id="nameIn" type="text" maxlength="16" placeholder="你的名字" autocomplete="off">
+        <button id="btnStart">开 始</button>
+      </div>
+
+      <div class="board" id="boardWrap">
+        <h3><span>排 行 榜</span><span id="boardNote">重放验证</span></h3>
+        <ol id="boardList"></ol>
+      </div>
+
+      <div class="hint" id="startHint">成绩由服务端重放你的操作后判定，改分数没用</div>
     </div>
   </div>
 
+  <!-- 结束 -->
   <div id="over" class="veil hide">
     <div class="inner">
-      <h1 style="font-size:clamp(30px,6.5vh,58px)">掉<i>下去了</i></h1>
+      <h1 style="font-size:clamp(28px,6vh,54px)">掉<i>下去了</i></h1>
       <div class="stats">
         <div>高度<b id="oScore">0</b></div>
         <div>跳跃<b id="oJumps">0</b></div>
         <div>最高<b id="oBest">0</b></div>
       </div>
-      <button id="btnAgain">再 来 一 次</button>
-      <div class="hint" id="oSeed"></div>
+      <div class="row">
+        <button id="btnAgain">再 来 一 次</button>
+        <button id="btnCard" class="ghost">生成分享图</button>
+        <button id="btnLink" class="ghost">复制同图链接</button>
+      </div>
+      <div class="hint" id="subHint"></div>
+      <canvas id="card" width="1200" height="630"></canvas>
+      <div class="board" id="boardWrap2">
+        <h3><span>排 行 榜</span><span id="boardNote2"></span></h3>
+        <ol id="boardList2"></ol>
+      </div>
     </div>
   </div>
 </div>
@@ -147,13 +207,17 @@
 <script type="module">
 import { createGame, step, STEP, W, VIEW_H, PLAT, PLAT_W } from '../src/engine.js';
 import { botInput } from '../src/bot.js';
+import { createRecorder } from '../src/replay.js';
 
 /* =========================================================================
- * 浏览器渲染器
+ * 浏览器渲染器 + 排行榜客户端
  *
- * 这个文件只画画和收输入,一行游戏逻辑都没有。引擎当初被要求写成纯函数
- * （不碰终端、不碰文件系统、不用 Math.random），回报就在这里：同一份
- * src/engine.js 同时驱动终端版和这个 canvas 版，两边行为逐帧一致。
+ * 这个文件只画画、收输入、跟服务端说话,一行游戏逻辑都没有。
+ * 引擎是纯函数（不碰终端、不碰文件、不用 Math.random），所以同一份
+ * src/engine.js 同时驱动终端版和这里，两边逐帧一致。
+ *
+ * 排行榜也吃这个红利：客户端每帧记下按了什么，死亡时把「种子 + 日志」
+ * 交给服务端重放。**分数不由客户端决定**,改内存里的 score 毫无意义。
  * ========================================================================= */
 
 const QS    = new URLSearchParams(location.search);
@@ -163,20 +227,19 @@ const SEED0 = QS.has('seed') ? (parseInt(QS.get('seed'), 10) >>> 0) : null;
 const cv  = document.getElementById('c');
 const ctx = cv.getContext('2d', { alpha: false, willReadFrequently: true });
 
+const $ = id => document.getElementById(id);
 const el = {
-  score:  document.getElementById('score'),
-  best:   document.getElementById('best'),
-  meta:   document.getElementById('meta'),
-  start:  document.getElementById('start'),
-  over:   document.getElementById('over'),
-  oScore: document.getElementById('oScore'),
-  oJumps: document.getElementById('oJumps'),
-  oBest:  document.getElementById('oBest'),
-  oSeed:  document.getElementById('oSeed'),
+  score: $('score'), best: $('best'), meta: $('meta'),
+  start: $('start'), over: $('over'),
+  oScore: $('oScore'), oJumps: $('oJumps'), oBest: $('oBest'),
+  nameIn: $('nameIn'), startHint: $('startHint'), subHint: $('subHint'),
+  boardList: $('boardList'), boardList2: $('boardList2'),
+  boardNote: $('boardNote'), boardNote2: $('boardNote2'),
+  card: $('card'), btnCard: $('btnCard'), btnLink: $('btnLink'),
 };
 
 /* ----------------------------- 画面尺寸 ----------------------------- */
-let CW = 0, CH = 0, PX = 0, PY = 0;      // 画布像素 / 每世界单位对应多少像素
+let CW = 0, CH = 0, PX = 0, PY = 0;
 
 function resize(){
   const r   = cv.getBoundingClientRect();
@@ -190,7 +253,6 @@ function resize(){
 addEventListener('resize', resize);
 
 /* ----------------------------- 调色 ----------------------------- */
-// 随高度推进的天空。低空暖、高空冷，让「爬升」这件事被看见。
 const SKIES = [
   { at:   0, top: [ 44,  62, 108], bot: [122, 104, 138] },
   { at: 180, top: [ 30,  44,  92], bot: [ 92,  74, 132] },
@@ -215,7 +277,6 @@ const SKIN = {
   [PLAT.SPRING]:  { face: '#f59ad4', edge: '#a94f8c' },
 };
 
-/* ----------------------------- 视差星点 ----------------------------- */
 const STARS = (function(){
   let t = 0x9e3779b9;
   const rnd = () => {
@@ -225,8 +286,7 @@ const STARS = (function(){
     return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
   };
   const out = [];
-  const layers = [[70, 0.10, 1.0], [40, 0.24, 1.6], [18, 0.42, 2.5]];
-  for (const L of layers){
+  for (const L of [[70, 0.10, 1.0], [40, 0.24, 1.6], [18, 0.42, 2.5]]){
     for (let i = 0; i < L[0]; i++){
       out.push({ x: rnd() * W, y: rnd() * 120, depth: L[1], r: L[2], a: 0.22 + rnd() * 0.55 });
     }
@@ -241,13 +301,9 @@ function puff(x, y, n){
     const a  = Math.random() * Math.PI * 2;
     const sp = 2 + Math.random() * 8;
     const life = 0.3 + Math.random() * 0.35;
-    dust.push({
-      x, y,
-      vx: Math.cos(a) * sp,
-      vy: Math.abs(Math.sin(a)) * sp * 0.4 + 1.5,
-      life, max: life,
-      r: 0.1 + Math.random() * 0.2,
-    });
+    dust.push({ x, y, vx: Math.cos(a) * sp,
+                vy: Math.abs(Math.sin(a)) * sp * 0.4 + 1.5,
+                life, max: life, r: 0.1 + Math.random() * 0.2 });
   }
 }
 function stepDust(dt){
@@ -263,20 +319,109 @@ function stepDust(dt){
 
 /* ----------------------------- 状态 ----------------------------- */
 let game = null;
-let mode = 'menu';                  // menu | play | over
-let camRender = 0;                  // 渲染相机，平滑跟随逻辑相机
+let mode = 'menu';
+let camRender = 0;
 let shake = 0, squash = 0, lastJumps = 0;
 let frames = 0, acc = 0, last = 0;
+let lastResult = null;              // 上一局的提交结果，画分享图要用
 
 const keys = { left: false, right: false };
-const best = () => Number(localStorage.getItem('jumpwow.best') || 0);
+const rec  = createRecorder();
 
+const best = () => Number(localStorage.getItem('jumpwow.best') || 0);
+const myName = () => (localStorage.getItem('jumpwow.name') || '').trim();
+
+/* ----------------------------- 排行榜客户端 ----------------------------- */
+let apiUp = null;                   // null 未知 / true 可用 / false 不可用
+
+async function fetchBoard(){
+  try{
+    const r = await fetch('/api/scores?limit=20', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    apiUp = true;
+    return d.scores || [];
+  }catch(e){
+    apiUp = false;
+    return null;
+  }
+}
+
+function paintBoard(listEl, noteEl, scores, highlightAt){
+  if (!scores){
+    listEl.innerHTML = '<div class="empty">排行榜服务没连上,单机照玩，成绩只存在本地</div>';
+    if (noteEl) noteEl.textContent = '离线';
+    return;
+  }
+  if (noteEl) noteEl.textContent = '重放验证 · ' + scores.length + ' 条';
+  if (!scores.length){
+    listEl.innerHTML = '<div class="empty">还没有人上榜。第一个就是你。</div>';
+    return;
+  }
+  listEl.innerHTML = scores.map((s, i) => {
+    const cls = (i < 3 ? 'top ' : '') + (highlightAt && s.at === highlightAt ? 'me' : '');
+    const nm = String(s.name).replace(/[<>&]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;' }[c]));
+    return '<li class="' + cls.trim() + '">' +
+           '<span class="rk">' + (i + 1) + '</span>' +
+           '<span class="nm">' + nm + '</span>' +
+           '<span class="sc">' + s.score + '</span></li>';
+  }).join('');
+}
+
+async function refreshBoards(highlightAt){
+  const scores = await fetchBoard();
+  paintBoard(el.boardList,  el.boardNote,  scores, highlightAt);
+  paintBoard(el.boardList2, el.boardNote2, scores, highlightAt);
+  if (apiUp === false){
+    el.startHint.className = 'hint warn';
+    el.startHint.textContent = '排行榜服务没连上。用 npm run serve 启动带 API 的服务器即可联机。';
+  }
+  return scores;
+}
+
+async function submitRun(){
+  if (!game || game.alive) return;
+  if (apiUp === false){
+    el.subHint.className = 'hint warn';
+    el.subHint.textContent = '离线模式，成绩没有上传';
+    return;
+  }
+  el.subHint.className = 'hint';
+  el.subHint.textContent = '正在提交,服务端会重放你这局的每一帧';
+
+  try{
+    const r = await fetch('/api/scores', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      // 注意这里没有 score 字段。分数由服务端重放算出，客户端说了不算。
+      body: JSON.stringify({ name: myName(), seed: game.seed, log: rec.encode() }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+
+    lastResult = d;
+    el.subHint.className = 'hint good';
+    el.subHint.textContent = '已验证上榜 · 第 ' + d.rank + ' 名 · ' +
+                             (rec.encode().length / 1024).toFixed(1) + ' KB 操作日志';
+    await refreshBoards(d.entry.at);
+  }catch(e){
+    el.subHint.className = 'hint warn';
+    el.subHint.textContent = '提交失败：' + e.message;
+    await refreshBoards();
+  }
+}
+
+/* ----------------------------- 生命周期 ----------------------------- */
 function begin(seed){
   game = createGame(seed != null ? seed : ((Math.random() * 0xffffffff) >>> 0));
   camRender = game.cam;
   dust.length = 0;
+  rec.reset();
   lastJumps = 0; shake = 0; squash = 0; acc = 0;
+  lastResult = null;
   mode = 'play';
+  el.card.classList.remove('show');
+  el.subHint.textContent = '';
   el.start.classList.add('hide');
   el.over.classList.add('hide');
 }
@@ -284,22 +429,22 @@ function begin(seed){
 function finish(){
   mode = 'over';
   const b = Math.max(best(), game.score);
-  try { localStorage.setItem('jumpwow.best', String(b)); } catch (e) {}
+  try{ localStorage.setItem('jumpwow.best', String(b)); }catch(e){}
   el.oScore.textContent = game.score;
   el.oJumps.textContent = game.stats.jumps;
   el.oBest.textContent  = b;
-  el.oSeed.textContent  = 'SEED ' + game.seed;
   el.over.classList.remove('hide');
+  if (!BOT) submitRun();
 }
 
 /* ----------------------------- 输入 ----------------------------- */
-// 浏览器有 keyup，所以这里是真正的「按住持续移动」,比终端版好按得多
 addEventListener('keydown', e => {
+  if (document.activeElement === el.nameIn) return;      // 打名字时别当成操作
   if (e.code === 'ArrowLeft'  || e.code === 'KeyA') keys.left  = true;
   if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = true;
   if (e.code === 'Space' || e.code === 'Enter'){
     e.preventDefault();
-    if (mode !== 'play') begin();
+    if (mode !== 'play') startFromUI();
   }
 });
 addEventListener('keyup', e => {
@@ -323,8 +468,112 @@ cv.addEventListener('touchend', e => {
   if (!e.touches.length) keys.left = keys.right = false;
 }, { passive: true });
 
-document.getElementById('btnStart').onclick = () => begin(SEED0);
-document.getElementById('btnAgain').onclick = () => begin();
+function startFromUI(){
+  const n = el.nameIn.value.trim();
+  if (n) try{ localStorage.setItem('jumpwow.name', n); }catch(e){}
+  begin(mode === 'menu' ? SEED0 : null);
+}
+$('btnStart').onclick = startFromUI;
+$('btnAgain').onclick = () => begin();
+
+/* ----------------------------- 分享 ----------------------------- */
+el.btnCard.onclick = () => {
+  drawCard();
+  el.card.classList.add('show');
+  el.card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  try{
+    el.card.toBlob(b => {
+      if (!b) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(b);
+      a.download = 'jumpwow-' + (game ? game.score : 0) + '.png';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    });
+  }catch(e){}
+};
+
+el.btnLink.onclick = async () => {
+  const u = location.origin + location.pathname + '?seed=' + (game ? game.seed : 0);
+  try{
+    await navigator.clipboard.writeText(u);
+    el.btnLink.textContent = '已复制';
+    setTimeout(() => { el.btnLink.textContent = '复制同图链接'; }, 1800);
+  }catch(e){
+    el.subHint.className = 'hint';
+    el.subHint.textContent = u;
+  }
+};
+
+/** 画一张 1200x630 的分享图。种子写在上面,别人打开链接就是同一张图。 */
+function drawCard(){
+  const g = el.card.getContext('2d');
+  const Wc = el.card.width, Hc = el.card.height;
+  const s = game;
+  const sky = skyAt(s ? s.maxY : 0);
+
+  const bg = g.createLinearGradient(0, 0, 0, Hc);
+  bg.addColorStop(0, rgb(sky.top));
+  bg.addColorStop(1, rgb(sky.bot));
+  g.fillStyle = bg;
+  g.fillRect(0, 0, Wc, Hc);
+
+  // 背景里铺一层平台剪影，暗示这是哪张图
+  if (s){
+    g.globalAlpha = 0.28;
+    for (const pl of s.platforms){
+      const skin = SKIN[pl.type];
+      g.fillStyle = skin.face;
+      const x = (pl.x / W) * Wc;
+      const y = Hc - ((pl.y - s.cam) / VIEW_H) * Hc;
+      g.fillRect(x - (PLAT_W / W) * Wc / 2, y, (PLAT_W / W) * Wc, 12);
+    }
+    g.globalAlpha = 1;
+  }
+
+  const pad = 72;
+  g.fillStyle = 'rgba(10,14,30,.42)';
+  g.fillRect(0, 0, Wc, Hc);
+
+  g.textBaseline = 'alphabetic';
+  g.fillStyle = '#ffd76b';
+  g.font = '900 58px ui-monospace, SFMono-Regular, Menlo, monospace';
+  g.fillText('JUMPWOW', pad, pad + 52);
+
+  g.fillStyle = 'rgba(255,255,255,.62)';
+  g.font = '600 22px ui-sans-serif, system-ui, sans-serif';
+  g.fillText(myName() || '匿名跳跃者', pad, pad + 96);
+
+  g.fillStyle = '#fff';
+  g.font = '900 190px ui-monospace, SFMono-Regular, Menlo, monospace';
+  g.fillText(String(s ? s.score : 0), pad - 6, Hc - 172);
+
+  g.fillStyle = 'rgba(255,255,255,.6)';
+  g.font = '700 24px ui-sans-serif, system-ui, sans-serif';
+  g.fillText('米', pad + g.measureText(String(s ? s.score : 0)).width * 0.1 + 8, Hc - 172);
+
+  const facts = [
+    '跳跃 ' + (s ? s.stats.jumps : 0) + ' 次',
+    '弹簧 ' + (s ? s.stats.springs : 0) + ' 次',
+    '踩碎 ' + (s ? s.stats.broken : 0) + ' 块',
+  ];
+  if (lastResult && lastResult.rank) facts.unshift('全球第 ' + lastResult.rank + ' 名');
+
+  g.font = '600 26px ui-sans-serif, system-ui, sans-serif';
+  g.fillStyle = 'rgba(255,255,255,.82)';
+  g.fillText(facts.join('   ·   '), pad, Hc - 108);
+
+  g.font = '600 20px ui-monospace, monospace';
+  g.fillStyle = 'rgba(255,255,255,.45)';
+  g.fillText('SEED ' + (s ? s.seed : 0) + '   ·   同一个种子永远是同一张图，来比比看', pad, Hc - 60);
+
+  if (lastResult && lastResult.verified){
+    g.fillStyle = 'rgba(140,240,190,.9)';
+    g.font = '700 20px ui-sans-serif, system-ui, sans-serif';
+    const t = '服务端重放验证通过';
+    g.fillText(t, Wc - pad - g.measureText(t).width, pad + 52);
+  }
+}
 
 /* ----------------------------- 绘制 ----------------------------- */
 const sx = wx => wx * PX;
@@ -347,14 +596,12 @@ function drawPlatform(pl){
   const h = Math.max(6, 0.5 * PY);
   const y = sy(pl.y) - h * 0.35;
 
-  // 环形世界：跨接缝的平台要画两遍
   for (const off of [-W, 0, W]){
     const x = sx(pl.x + off) - w / 2;
     if (x > CW || x + w < 0) continue;
 
     ctx.fillStyle = skin.edge;
     roundRect(x, y + h * 0.45, w, h * 0.9, h * 0.4); ctx.fill();
-
     ctx.fillStyle = skin.face;
     roundRect(x, y, w, h, h * 0.42); ctx.fill();
 
@@ -383,7 +630,6 @@ function drawPlatform(pl){
 
 function drawPlayer(p){
   const base = 0.95 * PY;
-  // 上升拉长、落地压扁,一点点形变就能让跳跃有分量
   const stretch = Math.max(-0.3, Math.min(0.28, p.vy / 95)) - squash;
   const w = base * (1 - stretch * 0.6);
   const h = base * (1 + stretch);
@@ -395,7 +641,6 @@ function drawPlayer(p){
 
     ctx.fillStyle = 'rgba(0,0,0,.25)';
     roundRect(x + w * 0.08, y + h * 0.1, w, h, w * 0.3); ctx.fill();
-
     ctx.fillStyle = '#ffd76b';
     roundRect(x, y, w, h, w * 0.3); ctx.fill();
 
@@ -408,9 +653,7 @@ function drawPlayer(p){
 }
 
 function render(){
-  const h = game ? game.maxY : 0;
-  const sky = skyAt(h);
-
+  const sky = skyAt(game ? game.maxY : 0);
   const g = ctx.createLinearGradient(0, 0, 0, CH);
   g.addColorStop(0, rgb(sky.top));
   g.addColorStop(1, rgb(sky.bot));
@@ -423,11 +666,9 @@ function render(){
                   (Math.random() - 0.5) * shake * PY);
   }
 
-  // 视差星点：每层按 depth 跟随相机，制造纵深
   ctx.fillStyle = '#fff';
   for (const st of STARS){
-    const wy = st.y + Math.floor((camRender * st.depth) / 120) * 120;
-    let py = CH - ((wy - camRender * st.depth) % 120) / 120 * CH;
+    let py = CH - ((st.y - camRender * st.depth) % 120) / 120 * CH;
     py = ((py % CH) + CH) % CH;
     ctx.globalAlpha = st.a * 0.75;
     ctx.beginPath();
@@ -443,7 +684,6 @@ function render(){
       if (y < -50 || y > CH + 50) continue;
       drawPlatform(pl);
     }
-
     ctx.fillStyle = 'rgba(255,255,255,.8)';
     for (const p of dust){
       ctx.globalAlpha = Math.max(0, p.life / p.max) * 0.8;
@@ -452,13 +692,11 @@ function render(){
       ctx.fill();
     }
     ctx.globalAlpha = 1;
-
     drawPlayer(game.player);
   }
 
   ctx.restore();
 
-  // 顶部压暗，让 HUD 读得清
   const vg = ctx.createLinearGradient(0, 0, 0, CH * 0.3);
   vg.addColorStop(0, 'rgba(0,0,0,.38)');
   vg.addColorStop(1, 'rgba(0,0,0,0)');
@@ -480,9 +718,10 @@ function frame(now){
     let guard = 0;
     while (acc >= STEP && guard++ < 6){
       acc -= STEP;
-      step(game, BOT ? botInput(game) : keys);
+      const input = BOT ? botInput(game) : keys;
+      rec.push(input);                 // 记在 step 之前：日志必须和实际喂进引擎的一致
+      step(game, input);
 
-      // 落地了：扬尘 + 挤压 + 轻微震动
       if (game.stats.jumps > lastJumps){
         lastJumps = game.stats.jumps;
         puff(game.player.x, game.player.y, 7);
@@ -519,7 +758,19 @@ window.__DIAG__ = {
   get platforms(){ return game ? game.platforms.length : 0; },
   get playerPos(){ return game ? { x: game.player.x, y: game.player.y } : null; },
   get dust(){ return dust.length; },
+  get logTicks(){ return rec.ticks; },
+  get logSize(){ return rec.encode().length; },
+  get apiUp(){ return apiUp; },
+  get boardRows(){ return el.boardList.querySelectorAll('li').length; },
+  get submitHint(){ return el.subHint.textContent; },
   start(seed){ begin(seed); return true; },
+  setName(n){ try{ localStorage.setItem('jumpwow.name', n); }catch(e){} el.nameIn.value = n; return true; },
+  makeCard(){ drawCard(); el.card.classList.add('show'); return true; },
+  get cardDrawn(){
+    const g = el.card.getContext('2d');
+    const d = g.getImageData(el.card.width >> 1, el.card.height >> 1, 1, 1).data;
+    return d[3] > 0 && (d[0] + d[1] + d[2]) > 0;
+  },
   /** 采样画布，返回不同颜色的个数。证明真的画了东西，而不是一块纯色。 */
   sampleColors(){
     const n = 20, set = new Set();
@@ -538,10 +789,12 @@ window.__DIAG__ = {
 /* ----------------------------- 启动 ----------------------------- */
 resize();
 requestAnimationFrame(frame);
+el.nameIn.value = myName();
+el.best.textContent = best() ? 'BEST ' + best() : '';
+refreshBoards();
 window.__DIAG__.ready = true;
 
 if (BOT) begin(SEED0);          // 无头测试用：跳过点击直接开局
-el.best.textContent = best() ? 'BEST ' + best() : '';
 </script>
 </body>
 </html>
