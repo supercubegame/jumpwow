@@ -6,6 +6,24 @@ import {
   IN, encodeLog, decodeLog, createRecorder, replay, stateOf, inputOf, MAX_LOG_CHARS,
 } from '../src/replay.js';
 
+/**
+ * 玩到死，返回一局完整的样本。
+ *
+ * 光让机器人跑是死不掉的（它一直往上爬），完全不按键也死不掉
+ * （玩家在同一块平台上原地弹跳）。所以先爬一段再一直按同一个方向：
+ * 玩家横向漂离平台，而相机只升不降，掉出视野就判死。
+ */
+function playToDeath(seed, climb = 900, cap = 20000){
+  const g = createGame(seed);
+  const rec = createRecorder();
+  for (let i = 0; i < cap && g.alive; i++){
+    const input = i < climb ? botInput(g) : { left: false, right: true };
+    rec.push(input);
+    step(g, input);
+  }
+  return { game: g, log: rec.encode() };
+}
+
 test('输入三态：左右同时按等于没按', () => {
   assert.equal(stateOf({ left: false, right: false }), IN.NONE);
   assert.equal(stateOf({ left: true,  right: false }), IN.LEFT);
@@ -46,16 +64,8 @@ test('畸形日志一律抛错，不能悄悄放过', () => {
 });
 
 test('重放结果与实跑逐字段一致', () => {
-  // 实跑一局并记录
-  const live = createGame(20260811);
-  const rec = createRecorder();
-  for (let i = 0; i < 3000 && live.alive; i++){
-    const input = botInput(live);
-    rec.push(input);
-    step(live, input);
-  }
-
-  const r = replay(live.seed, rec.encode());
+  const { game: live, log } = playToDeath(20260811);
+  const r = replay(live.seed, log);
   assert.equal(r.score,  live.score,        '分数必须一致');
   assert.equal(r.ticks,  live.ticks,        '帧数必须一致');
   assert.equal(r.jumps,  live.stats.jumps,  '跳跃数必须一致');
@@ -63,25 +73,30 @@ test('重放结果与实跑逐字段一致', () => {
   assert.equal(r.seed,   live.seed);
 });
 
-test('改一个字节，重放分数就对不上（反作弊的根据）', () => {
-  const live = createGame(4242);
-  const rec = createRecorder();
-  for (let i = 0; i < 2400 && live.alive; i++){
-    const input = botInput(live);
-    rec.push(input);
-    step(live, input);
-  }
-  const honest = rec.encode();
-  assert.equal(replay(live.seed, honest).score, live.score);
+test('一直按同一个方向最终会摔死（样本局构造前提）', () => {
+  const { game } = playToDeath(31337);
+  assert.equal(game.alive, false, '构造不出「已结束的局」，排行榜断言就没意义');
+  assert.ok(game.score > 0, '死之前应该已经爬到一定高度');
+});
 
-  // 换个种子：同一份操作在别的地图上必然是另一个结果
-  assert.notEqual(replay(live.seed + 1, honest).score, live.score);
+test('篡改日志或换种子都拿不到原来的分数', () => {
+  const { game: live, log } = playToDeath(4242);
+  const states = decodeLog(log);
 
-  // 篡改日志本身
-  const tampered = honest.replace(/^./, c => (c === '0' ? '1' : '0'));
-  if (tampered !== honest){
-    assert.notEqual(replay(live.seed, tampered).score, live.score);
+  assert.notEqual(replay(live.seed + 1, log).score, live.score, '同一份操作换张图必然是别的结果');
+
+  // 翻转中段一整块。别只改一个字符,那点位移落在平台容差内，结果不会变，
+  // 那不是引擎的问题，是这条测试太弱。
+  const mid = states.slice();
+  const from = Math.floor(mid.length * 0.3);
+  for (let i = from; i < Math.min(mid.length, from + 400); i++){
+    mid[i] = mid[i] === 1 ? 2 : 1;
   }
+  assert.notEqual(replay(live.seed, encodeLog(mid)).score, live.score);
+
+  // 真正要保证的是这条：截断日志不可能换来更高的分
+  const cut = replay(live.seed, encodeLog(states.slice(0, Math.floor(states.length * 0.6)))).score;
+  assert.ok(cut <= live.score, '少玩几帧却得了更高分，说明重放不可信');
 });
 
 test('空日志重放得零分且玩家还活着', () => {

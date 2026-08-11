@@ -48,6 +48,28 @@ const extra = {};
 
 fs.mkdirSync(ART, { recursive: true });
 
+/**
+ * 玩到死，返回可提交的样本局。
+ *
+ * 排行榜只收「已经结束」的局，所以测试必须真的把玩家玩死。
+ * 光让机器人跑是死不掉的,它会一直往上爬；而完全不按键也死不掉,
+ * 玩家会在同一块平台上原地弹跳到天荒地老。
+ *
+ * 办法是先让机器人爬一段拿到分数，再一直按同一个方向：玩家会横向漂离
+ * 平台，而相机只升不降，掉出视野下沿就判死。
+ */
+function playToDeath(seed, climbTicks = 1200, capTicks = 20000){
+  const g = createGame(seed);
+  const rec = createRecorder();
+  for (let i = 0; i < capTicks && g.alive; i++){
+    const input = i < climbTicks ? botInput(g) : { left: false, right: true };
+    rec.push(input);
+    step(g, input);
+  }
+  return { seed: g.seed, log: rec.encode(), score: g.score,
+           ticks: g.ticks, jumps: g.stats.jumps, alive: g.alive };
+}
+
 /* --- 01 单元测试 ---
  *
  * 自己枚举文件显式传给 node。不要写 `--test test/`,新版 Node 会把它
@@ -258,38 +280,51 @@ fs.mkdirSync(ART, { recursive: true });
 }
 
 /* --- 14 重放与实跑逐字段一致 --- */
-let honestRun = null;
+const honest = playToDeath(20260811);
 {
-  const live = createGame(20260811);
-  const rec = createRecorder();
-  for (let i = 0; i < 4000 && live.alive; i++){
-    const input = botInput(live);
-    rec.push(input);
-    step(live, input);
-  }
-  const log = rec.encode();
-  const r = replay(live.seed, log);
-  const same = r.score === live.score && r.ticks === live.ticks && r.jumps === live.stats.jumps;
+  const r = replay(honest.seed, honest.log);
+  const same = r.score === honest.score && r.ticks === honest.ticks &&
+               r.jumps === honest.jumps && r.alive === honest.alive;
   metrics.replayScore = r.score;
-  metrics.replayLogChars = log.length;
-  honestRun = { seed: live.seed, log, score: live.score, alive: live.alive };
+  metrics.replayLogChars = honest.log.length;
+  metrics.replayTicks = r.ticks;
 
   check('14 重放结果与实跑逐字段一致', same,
-        same ? ('分数 ' + r.score + ' · ' + r.ticks + ' 帧 · 日志 ' + log.length + ' 字符')
-             : ('实跑 ' + live.score + '/' + live.ticks + '，重放 ' + r.score + '/' + r.ticks +
+        same ? ('分数 ' + r.score + ' · ' + r.ticks + ' 帧 · 日志 ' + honest.log.length + ' 字符')
+             : ('实跑 ' + honest.score + '/' + honest.ticks + '，重放 ' + r.score + '/' + r.ticks +
                 ',引擎里混进了外部状态'));
 }
 
-/* --- 15 篡改会被发现 --- */
+/* --- 15 篡改会被发现 ---
+ *
+ * 注意别把这条写得太弱。第一版只翻转日志的第一个字符,那等于开局第一帧
+ * 从「没按」变成「按左」，位移 0.32 个单位，而落地判定有半个平台宽的容差，
+ * 结果自然一模一样，断言就永远红。真正要保证的不是「任何一个 bit 变化都
+ * 改变结果」，而是「靠改日志拿不到更高的分」。
+ */
 {
-  const { seed, log, score } = honestRun;
-  const wrongSeed = replay(seed + 1, log).score;
-  const tampered  = log.replace(/^./, c => (c === '0' ? '1' : '0'));
-  const wrongLog  = tampered === log ? null : replay(seed, tampered).score;
-  const ok = wrongSeed !== score && (wrongLog === null || wrongLog !== score);
-  check('15 换种子或改日志都会得到不同分数', ok,
-        '诚实 ' + score + ' · 换种子 ' + wrongSeed +
-        (wrongLog === null ? '' : ' · 改日志 ' + wrongLog));
+  const states = decodeLog(honest.log);
+  const wrongSeed = replay(honest.seed + 1, honest.log).score;
+
+  // 翻转中段一整块，这是有实质影响的篡改
+  const mid = states.slice();
+  const from = Math.floor(mid.length * 0.3);
+  for (let i = from; i < Math.min(mid.length, from + 400); i++){
+    mid[i] = mid[i] === 1 ? 2 : 1;
+  }
+  const flipped = replay(honest.seed, encodeLog(mid)).score;
+
+  // 截断：少玩几帧不可能得更高分
+  const cut = replay(honest.seed, encodeLog(states.slice(0, Math.floor(states.length * 0.6)))).score;
+
+  const ok = wrongSeed !== honest.score &&
+             flipped   !== honest.score &&
+             cut       <=  honest.score;
+  metrics.tamper = { honest: honest.score, wrongSeed, flipped, cut };
+
+  check('15 篡改日志或换种子都拿不到这个分数', ok,
+        '诚实 ' + honest.score + ' · 换种子 ' + wrongSeed +
+        ' · 翻转中段 ' + flipped + ' · 截断 ' + cut);
 }
 
 /* --- 16-17 排行榜服务端 --- */
@@ -313,44 +348,44 @@ let honestRun = null;
   try{
     // 16：提交一局真实成绩。故意带上一个夸张的 score 字段,
     // 落库的必须是重放算出来的真值，不是这个。
-    const honest = await post({
-      name: '  闸门<script>  ', seed: honestRun.seed, log: honestRun.log,
+    const sent = await post({
+      name: '  闸门<script>  ', seed: honest.seed, log: honest.log,
       score: 999999,
     });
 
     const list = await (await fetch(api + '?limit=5')).json();
     const top = list.scores && list.scores[0];
 
-    const ok16 = honest.status === 201 &&
-                 honest.body.entry.score === honestRun.score &&
-                 honest.body.verified === true &&
-                 top && top.score === honestRun.score &&
-                 top.name === '闸门<script>'.slice(0, 16).trim();
+    const ok16 = sent.status === 201 &&
+                 sent.body.entry.score === honest.score &&
+                 sent.body.verified === true &&
+                 top && top.score === honest.score &&
+                 top.name === '闸门<script>';
 
-    metrics.serverRank = honest.body.rank;
+    metrics.serverRank = sent.body && sent.body.rank;
     check('16 服务端以重放值判分，忽略客户端上报的分数', ok16,
-          ok16 ? ('落库 ' + honest.body.entry.score + ' 分（客户端声称 999999），第 ' +
-                  honest.body.rank + ' 名，名字已消毒')
-               : ('HTTP ' + honest.status + ' ' + JSON.stringify(honest.body).slice(0, 200)));
+          ok16 ? ('落库 ' + sent.body.entry.score + ' 分（客户端声称 999999），第 ' +
+                  sent.body.rank + ' 名，名字已消毒')
+               : ('HTTP ' + sent.status + ' ' + JSON.stringify(sent.body).slice(0, 220)));
 
     // 17：几种伪造与畸形输入，全都必须被挡
     const bad = [
       ['空日志（这局还没结束）', { name: 'x', seed: 1, log: '' }],
+      ['未结束的局',            { name: 'x', seed: 3, log: '0a' }],
       ['畸形日志',              { name: 'x', seed: 1, log: '9zzz' }],
-      ['非法种子',              { name: 'x', seed: -5, log: honestRun.log }],
+      ['非法种子',              { name: 'x', seed: -5, log: honest.log }],
       ['缺日志只报分数',        { name: 'x', seed: 1, score: 99999 }],
       ['日志超长',              { name: 'x', seed: 1, log: '1'.repeat(30000) }],
     ];
-    const rejected = [];
+    const notes = [];
     for (const [label, body] of bad){
       const r = await post(body);
-      if (r.status >= 400) rejected.push(label);
-      else rejected.push('!!未挡住: ' + label);
+      notes.push(r.status >= 400 ? label : '!!未挡住: ' + label);
     }
-    const ok17 = rejected.every(x => !x.startsWith('!!'));
+    const ok17 = notes.every(x => !x.startsWith('!!'));
     check('17 服务端拒绝伪造与畸形提交', ok17,
-          ok17 ? ('挡住 ' + rejected.length + ' 类：' + rejected.join('、'))
-               : rejected.filter(x => x.startsWith('!!')).join(' / '));
+          ok17 ? ('挡住 ' + notes.length + ' 类：' + notes.join('、'))
+               : notes.filter(x => x.startsWith('!!')).join(' / '));
 
   } finally {
     await srv.close();
