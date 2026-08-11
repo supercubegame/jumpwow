@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
-<title>JUMPWOW</title>
+<title>JUMPWOW — 无限向上跳跃</title>
+<meta name="description" content="踩着平台一路往上。落地自动起跳，你只管左右。世界左右相通。">
+<meta property="og:title" content="JUMPWOW">
+<meta property="og:description" content="无限向上跳跃。同一个种子永远是同一张图，来比比看。">
 <style>
   :root{
     --ink:   oklch(97% 0.012 265);
@@ -87,7 +90,6 @@
     padding:13px 24px;font-size:13px;
   }
   button.ghost:hover{border-color:var(--accent);color:var(--accent)}
-  button[disabled]{opacity:.4;cursor:not-allowed;transform:none}
   .row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;align-items:center}
 
   input[type=text]{
@@ -108,7 +110,6 @@
   .hint.warn{color:oklch(75% 0.13 45)}
   .hint.good{color:oklch(80% 0.13 155)}
 
-  /* ---------- 排行榜 ---------- */
   .board{
     margin:22px auto 0;text-align:left;max-width:420px;
     border:1px solid var(--line);border-radius:14px;overflow:hidden;
@@ -131,7 +132,7 @@
   .board li.top .rk,.board li.top .sc{color:var(--gold)}
   .board li.me{background:oklch(26% 0.05 88 / .35)}
   .board li.me .nm::after{content:' ← 你';color:var(--accent);font-size:11px}
-  .board .empty{padding:22px 16px;text-align:center;color:var(--dim);font-size:12px}
+  .board .empty{padding:22px 16px;text-align:center;color:var(--dim);font-size:12px;line-height:1.8}
 
   #card{display:none;margin:18px auto 0;max-width:100%;border-radius:12px;
         border:1px solid var(--line)}
@@ -156,7 +157,6 @@
     <div id="meta"></div>
   </div>
 
-  <!-- 开始 -->
   <div id="start" class="veil">
     <div class="inner">
       <h1>JUMP<i>WOW</i></h1>
@@ -172,15 +172,14 @@
       </div>
 
       <div class="board" id="boardWrap">
-        <h3><span>排 行 榜</span><span id="boardNote">重放验证</span></h3>
+        <h3><span>排 行 榜</span><span id="boardNote"></span></h3>
         <ol id="boardList"></ol>
       </div>
 
-      <div class="hint" id="startHint">成绩由服务端重放你的操作后判定，改分数没用</div>
+      <div class="hint" id="startHint"></div>
     </div>
   </div>
 
-  <!-- 结束 -->
   <div id="over" class="veil hide">
     <div class="inner">
       <h1 style="font-size:clamp(28px,6vh,54px)">掉<i>下去了</i></h1>
@@ -216,8 +215,11 @@ import { createRecorder } from '../src/replay.js';
  * 引擎是纯函数（不碰终端、不碰文件、不用 Math.random），所以同一份
  * src/engine.js 同时驱动终端版和这里，两边逐帧一致。
  *
- * 排行榜也吃这个红利：客户端每帧记下按了什么，死亡时把「种子 + 日志」
- * 交给服务端重放。**分数不由客户端决定**,改内存里的 score 毫无意义。
+ * 排行榜有两级：
+ *   有 API  → 全球榜。客户端只上报「种子 + 逐帧输入」，服务端重放判分，
+ *             改内存里的 score 毫无意义。
+ *   无 API  → 本机榜（localStorage）。纯静态部署（比如 GitHub Pages）
+ *             就是这种情况。它不假装权威，界面上明确标「仅本机」。
  * ========================================================================= */
 
 const QS    = new URLSearchParams(location.search);
@@ -323,20 +325,34 @@ let mode = 'menu';
 let camRender = 0;
 let shake = 0, squash = 0, lastJumps = 0;
 let frames = 0, acc = 0, last = 0;
-let lastResult = null;              // 上一局的提交结果，画分享图要用
+let lastResult = null;
 
 const keys = { left: false, right: false };
 const rec  = createRecorder();
 
-const best = () => Number(localStorage.getItem('jumpwow.best') || 0);
+const best   = () => Number(localStorage.getItem('jumpwow.best') || 0);
 const myName = () => (localStorage.getItem('jumpwow.name') || '').trim();
 
-/* ----------------------------- 排行榜客户端 ----------------------------- */
-let apiUp = null;                   // null 未知 / true 可用 / false 不可用
+/* ----------------------------- 排行榜 ----------------------------- */
+let apiUp = null;                   // null 未知 / true 有服务端 / false 纯静态
+
+/** 本机榜。纯静态部署时用,不假装权威，界面会明确标出来。 */
+function localBoard(){
+  try{ return JSON.parse(localStorage.getItem('jumpwow.local') || '[]'); }
+  catch(e){ return []; }
+}
+function pushLocal(entry){
+  const list = localBoard();
+  list.push(entry);
+  list.sort((a, b) => b.score - a.score || a.at - b.at);
+  const top = list.slice(0, 20);
+  try{ localStorage.setItem('jumpwow.local', JSON.stringify(top)); }catch(e){}
+  return top.indexOf(entry) + 1;
+}
 
 async function fetchBoard(){
   try{
-    const r = await fetch('/api/scores?limit=20', { cache: 'no-store' });
+    const r = await fetch('api/scores?limit=20', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     apiUp = true;
@@ -347,50 +363,59 @@ async function fetchBoard(){
   }
 }
 
-function paintBoard(listEl, noteEl, scores, highlightAt){
-  if (!scores){
-    listEl.innerHTML = '<div class="empty">排行榜服务没连上,单机照玩，成绩只存在本地</div>';
-    if (noteEl) noteEl.textContent = '离线';
-    return;
-  }
-  if (noteEl) noteEl.textContent = '重放验证 · ' + scores.length + ' 条';
-  if (!scores.length){
-    listEl.innerHTML = '<div class="empty">还没有人上榜。第一个就是你。</div>';
+function esc(s){
+  return String(s).replace(/[<>&]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;' }[c]));
+}
+
+function paintBoard(listEl, noteEl, scores, verified, highlightAt){
+  if (noteEl) noteEl.textContent = verified ? '服务端重放验证' : '仅本机';
+  if (!scores || !scores.length){
+    listEl.innerHTML = '<div class="empty">' +
+      (verified ? '还没有人上榜。第一个就是你。'
+                : '还没有记录。玩一局就有了。') + '</div>';
     return;
   }
   listEl.innerHTML = scores.map((s, i) => {
     const cls = (i < 3 ? 'top ' : '') + (highlightAt && s.at === highlightAt ? 'me' : '');
-    const nm = String(s.name).replace(/[<>&]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;' }[c]));
     return '<li class="' + cls.trim() + '">' +
            '<span class="rk">' + (i + 1) + '</span>' +
-           '<span class="nm">' + nm + '</span>' +
+           '<span class="nm">' + esc(s.name) + '</span>' +
            '<span class="sc">' + s.score + '</span></li>';
   }).join('');
 }
 
 async function refreshBoards(highlightAt){
-  const scores = await fetchBoard();
-  paintBoard(el.boardList,  el.boardNote,  scores, highlightAt);
-  paintBoard(el.boardList2, el.boardNote2, scores, highlightAt);
-  if (apiUp === false){
-    el.startHint.className = 'hint warn';
-    el.startHint.textContent = '排行榜服务没连上。用 npm run serve 启动带 API 的服务器即可联机。';
-  }
+  const remote = await fetchBoard();
+  const verified = apiUp === true;
+  const scores = verified ? remote : localBoard();
+  paintBoard(el.boardList,  el.boardNote,  scores, verified, highlightAt);
+  paintBoard(el.boardList2, el.boardNote2, scores, verified, highlightAt);
+
+  el.startHint.className = 'hint';
+  el.startHint.textContent = verified
+    ? '成绩由服务端重放你的每一帧操作后判定，改分数没用'
+    : '当前是纯静态部署，排行榜只存在这台设备上';
   return scores;
 }
 
 async function submitRun(){
   if (!game || game.alive) return;
+
+  // 纯静态：记到本机榜，并且诚实地说明它只是本机的
   if (apiUp === false){
-    el.subHint.className = 'hint warn';
-    el.subHint.textContent = '离线模式，成绩没有上传';
+    const rank = pushLocal({ name: myName() || '匿名跳跃者', score: game.score,
+                             seed: game.seed, at: Date.now() });
+    lastResult = { rank, verified: false };
+    el.subHint.className = 'hint';
+    el.subHint.textContent = '本机第 ' + rank + ' 名（这是纯静态部署，没有全球榜）';
+    await refreshBoards();
     return;
   }
+
   el.subHint.className = 'hint';
   el.subHint.textContent = '正在提交,服务端会重放你这局的每一帧';
-
   try{
-    const r = await fetch('/api/scores', {
+    const r = await fetch('api/scores', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       // 注意这里没有 score 字段。分数由服务端重放算出，客户端说了不算。
@@ -398,11 +423,10 @@ async function submitRun(){
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-
     lastResult = d;
     el.subHint.className = 'hint good';
     el.subHint.textContent = '已验证上榜 · 第 ' + d.rank + ' 名 · ' +
-                             (rec.encode().length / 1024).toFixed(1) + ' KB 操作日志';
+                             rec.encode().length + ' 字节操作日志';
     await refreshBoards(d.entry.at);
   }catch(e){
     el.subHint.className = 'hint warn';
@@ -518,12 +542,10 @@ function drawCard(){
   g.fillStyle = bg;
   g.fillRect(0, 0, Wc, Hc);
 
-  // 背景里铺一层平台剪影，暗示这是哪张图
   if (s){
     g.globalAlpha = 0.28;
     for (const pl of s.platforms){
-      const skin = SKIN[pl.type];
-      g.fillStyle = skin.face;
+      g.fillStyle = SKIN[pl.type].face;
       const x = (pl.x / W) * Wc;
       const y = Hc - ((pl.y - s.cam) / VIEW_H) * Hc;
       g.fillRect(x - (PLAT_W / W) * Wc / 2, y, (PLAT_W / W) * Wc, 12);
@@ -531,11 +553,12 @@ function drawCard(){
     g.globalAlpha = 1;
   }
 
-  const pad = 72;
   g.fillStyle = 'rgba(10,14,30,.42)';
   g.fillRect(0, 0, Wc, Hc);
 
+  const pad = 72;
   g.textBaseline = 'alphabetic';
+
   g.fillStyle = '#ffd76b';
   g.font = '900 58px ui-monospace, SFMono-Regular, Menlo, monospace';
   g.fillText('JUMPWOW', pad, pad + 52);
@@ -548,16 +571,14 @@ function drawCard(){
   g.font = '900 190px ui-monospace, SFMono-Regular, Menlo, monospace';
   g.fillText(String(s ? s.score : 0), pad - 6, Hc - 172);
 
-  g.fillStyle = 'rgba(255,255,255,.6)';
-  g.font = '700 24px ui-sans-serif, system-ui, sans-serif';
-  g.fillText('米', pad + g.measureText(String(s ? s.score : 0)).width * 0.1 + 8, Hc - 172);
-
   const facts = [
     '跳跃 ' + (s ? s.stats.jumps : 0) + ' 次',
     '弹簧 ' + (s ? s.stats.springs : 0) + ' 次',
     '踩碎 ' + (s ? s.stats.broken : 0) + ' 块',
   ];
-  if (lastResult && lastResult.rank) facts.unshift('全球第 ' + lastResult.rank + ' 名');
+  if (lastResult && lastResult.rank){
+    facts.unshift((lastResult.verified ? '全球第 ' : '本机第 ') + lastResult.rank + ' 名');
+  }
 
   g.font = '600 26px ui-sans-serif, system-ui, sans-serif';
   g.fillStyle = 'rgba(255,255,255,.82)';
@@ -567,6 +588,7 @@ function drawCard(){
   g.fillStyle = 'rgba(255,255,255,.45)';
   g.fillText('SEED ' + (s ? s.seed : 0) + '   ·   同一个种子永远是同一张图，来比比看', pad, Hc - 60);
 
+  // 只有真的通过服务端验证才印这行字。本机榜不配。
   if (lastResult && lastResult.verified){
     g.fillStyle = 'rgba(140,240,190,.9)';
     g.font = '700 20px ui-sans-serif, system-ui, sans-serif';
@@ -771,7 +793,6 @@ window.__DIAG__ = {
     const d = g.getImageData(el.card.width >> 1, el.card.height >> 1, 1, 1).data;
     return d[3] > 0 && (d[0] + d[1] + d[2]) > 0;
   },
-  /** 采样画布，返回不同颜色的个数。证明真的画了东西，而不是一块纯色。 */
   sampleColors(){
     const n = 20, set = new Set();
     for (let i = 0; i < n; i++){

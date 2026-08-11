@@ -1,0 +1,42 @@
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 只允许一个部署在跑，但不取消进行中的,取消一半的部署会留下坏状态
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    name: 部署到 GitHub Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # enablement: true 会在 Pages 还没开启时自动开启，
+      # 省掉「先去仓库设置里点一下」这一步
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      # 整个仓库原样上传。web/index.html 直接 import ../src/engine.js，
+      # 所以 src/ 必须一起在线上,这也是没有构建步骤的原因。
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
