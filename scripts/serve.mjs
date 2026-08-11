@@ -1,4 +1,4 @@
-// 极简静态服务器。verify-web 内嵌调用，也可以独立跑起来预览。
+// 静态服务器 + 排行榜 API。verify 脚本内嵌调用，也可以独立跑起来预览。
 //
 //   node scripts/serve.mjs            默认 8000
 //   PORT=3000 node scripts/serve.mjs
@@ -7,6 +7,7 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { handleApi } from '../server/api.mjs';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -22,6 +23,14 @@ export function startServer(port = 0, root = process.cwd()){
   const ROOT = path.resolve(root);
 
   const server = http.createServer(async (req, res) => {
+    try{
+      if (await handleApi(req, res)) return;
+    }catch(e){
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: String(e && e.message || e) }));
+      return;
+    }
+
     let rel;
     try{
       rel = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
