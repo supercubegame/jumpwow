@@ -29,8 +29,9 @@ import { startServer } from './serve.mjs';
 
 const HEADFUL = !!process.env.HEADFUL;
 const BOT_SEC = Number(process.env.BOT_SEC || 18);
-// 分享图上「不是背景」的像素至少要占这么多。见第 09 条的注释。
-const CARD_INK_MIN = Number(process.env.CARD_INK_MIN || 0.01);
+// 分享图上「不是背景」的像素至少要占这么多。实测 5.28%（39927 像素），
+// 取三分之一。它只抓「整块内容没画出来」，不是排版基准。见第 09 条注释。
+const CARD_INK_MIN = Number(process.env.CARD_INK_MIN || 0.0175);
 const ART     = path.resolve('artifacts');
 
 const checks = [];
@@ -196,8 +197,8 @@ try{
    * 现在比的是「和只有背景的同尺寸画面差了多少像素」。背景是无条件画的，
    * 所以差异只可能来自内容。内容全没画 → 0%，这才分得开。
    *
-   * 阈值 CARD_INK_MIN 与实测值耦合：按实测的三分之一取，只用来抓
-   * 「整块内容没画出来」，不是用来量排版好不好看。改了卡片布局要重看。
+   * CARD_INK_MIN 与实测值耦合：实测 5.28%，下限取三分之一 1.75%。只用来抓
+   * 「整块内容没画出来」，不是用来量排版好不好看。改了卡片布局要重测。
    */
   const card = await page.evaluate(() => {
     window.__DIAG__.makeCard();
