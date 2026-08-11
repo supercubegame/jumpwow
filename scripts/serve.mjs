@@ -19,12 +19,38 @@ const MIME = {
   '.svg':  'image/svg+xml',
 };
 
+/**
+ * 把任意前缀下的 /api/* 都归一到 /api/*。
+ *
+ * 页面本身在 /web/index.html，而它必须用**相对路径**请求 API,
+ * 因为 GitHub Pages 会把站点挂在 /jumpwow/ 这种子路径下，写死的绝对路径
+ * 会打到域名根上去。相对路径解析出来是 /web/api/scores，所以服务器这边
+ * 得认这个形状。
+ *
+ * 与其让客户端去猜自己挂在第几层，不如让服务器宽容一点。
+ *
+ *   /api/scores          → /api/scores
+ *   /web/api/scores      → /api/scores
+ *   /jumpwow/web/api/... → /api/...
+ */
+function normalizeApiPath(req){
+  let u;
+  try{ u = new URL(req.url, 'http://localhost'); }
+  catch{ return false; }
+
+  const i = u.pathname.indexOf('/api/');
+  if (i < 0) return false;
+
+  req.url = u.pathname.slice(i) + u.search;
+  return true;
+}
+
 export function startServer(port = 0, root = process.cwd()){
   const ROOT = path.resolve(root);
 
   const server = http.createServer(async (req, res) => {
     try{
-      if (await handleApi(req, res)) return;
+      if (normalizeApiPath(req) && await handleApi(req, res)) return;
     }catch(e){
       res.writeHead(500, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: String(e && e.message || e) }));
