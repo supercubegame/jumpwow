@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>JUMPWOW</title>
+<style>
+  :root{
+    --ink:   oklch(97% 0.012 265);
+    --muted: oklch(72% 0.030 265);
+    --line:  oklch(38% 0.035 265);
+    --accent:oklch(84% 0.155 88);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;overflow:hidden;background:oklch(16% 0.030 265)}
+  body{
+    font-family:ui-sans-serif,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+    color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+    -webkit-tap-highlight-color:transparent;
+    user-select:none;
+    display:grid;
+    place-items:center;
+  }
+
+  #stage{
+    position:relative;
+    width:min(100vw, calc(100vh * 40 / 22));
+    aspect-ratio:40 / 22;
+    box-shadow:0 40px 90px -30px oklch(8% 0.04 265 / .9);
+  }
+  canvas{display:block;width:100%;height:100%}
+
+  #hud{position:absolute;inset:0;pointer-events:none;font-variant-numeric:tabular-nums}
+
+  #score{
+    position:absolute;left:20px;top:14px;
+    font:800 clamp(26px,4.4vh,44px)/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+    letter-spacing:-.03em;
+    text-shadow:0 2px 14px oklch(12% 0.05 265 / .7);
+  }
+  #best{
+    position:absolute;left:21px;top:calc(14px + clamp(28px,4.6vh,46px));
+    font:600 11px/1 ui-monospace,monospace;
+    letter-spacing:.1em;color:var(--muted);
+  }
+  #meta{
+    position:absolute;right:20px;top:16px;text-align:right;
+    font:600 10px/1.9 ui-monospace,monospace;
+    letter-spacing:.08em;color:var(--muted);white-space:pre-line;
+  }
+
+  .veil{
+    position:absolute;inset:0;z-index:5;
+    display:grid;place-items:center;text-align:center;
+    background:radial-gradient(120% 90% at 50% 40%,
+               oklch(20% 0.04 265 / .55), oklch(13% 0.04 265 / .93));
+    backdrop-filter:blur(7px);
+  }
+  .veil.hide{display:none}
+  .veil .inner{padding:0 24px;max-width:min(90%, 560px)}
+
+  h1{
+    font-size:clamp(38px,9vh,84px);font-weight:900;
+    letter-spacing:-.045em;line-height:.92;
+  }
+  h1 i{font-style:normal;color:var(--accent)}
+  .tag{margin-top:10px;font-size:13px;color:var(--muted);line-height:1.75}
+
+  .keys{
+    display:flex;gap:8px;justify-content:center;flex-wrap:wrap;
+    margin:24px 0 26px;font-size:12px;color:var(--muted);
+  }
+  .keys div{
+    border:1px solid var(--line);border-radius:9px;padding:7px 13px;
+    background:oklch(22% 0.03 265 / .6);
+  }
+  kbd{
+    color:var(--ink);font:700 11px/1 ui-monospace,monospace;
+    border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;
+    padding:2px 5px;margin-right:5px;
+  }
+
+  button{
+    pointer-events:auto;cursor:pointer;
+    font:800 15px/1 inherit;letter-spacing:.06em;
+    color:oklch(18% 0.05 88);background:var(--accent);
+    border:0;border-radius:12px;padding:15px 40px;
+    box-shadow:0 12px 30px -12px oklch(84% 0.155 88 / .8);
+    transition:transform .12s cubic-bezier(.22,1,.36,1);
+  }
+  button:hover{transform:translateY(-2px)}
+  button:active{transform:translateY(0)}
+
+  .stats{display:flex;gap:26px;justify-content:center;margin:22px 0 26px}
+  .stats div{font:600 10px/1.7 ui-monospace,monospace;letter-spacing:.1em;color:var(--muted)}
+  .stats b{display:block;font-size:26px;font-weight:800;color:var(--ink);letter-spacing:-.02em}
+
+  .hint{margin-top:20px;font:600 10px/1.6 ui-monospace,monospace;color:var(--muted);opacity:.65}
+
+  @media (max-width:560px){
+    #score{left:14px;top:10px}
+    #best{left:15px}
+    #meta{right:14px;top:12px}
+  }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <canvas id="c"></canvas>
+
+  <div id="hud">
+    <div id="score">0</div>
+    <div id="best"></div>
+    <div id="meta"></div>
+  </div>
+
+  <div id="start" class="veil">
+    <div class="inner">
+      <h1>JUMP<i>WOW</i></h1>
+      <p class="tag">一路往上。落地自动起跳，你只管左右。<br>
+         世界左右相通,从右边出去会从左边回来。</p>
+      <div class="keys">
+        <div><kbd>A</kbd><kbd>D</kbd> 或方向键</div>
+        <div>手机点屏幕左右半边</div>
+      </div>
+      <button id="btnStart">开 始</button>
+      <div class="hint">同一个种子永远是同一张图</div>
+    </div>
+  </div>
+
+  <div id="over" class="veil hide">
+    <div class="inner">
+      <h1 style="font-size:clamp(30px,6.5vh,58px)">掉<i>下去了</i></h1>
+      <div class="stats">
+        <div>高度<b id="oScore">0</b></div>
+        <div>跳跃<b id="oJumps">0</b></div>
+        <div>最高<b id="oBest">0</b></div>
+      </div>
+      <button id="btnAgain">再 来 一 次</button>
+      <div class="hint" id="oSeed"></div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { createGame, step, STEP, W, VIEW_H, PLAT, PLAT_W } from '../src/engine.js';
+import { botInput } from '../src/bot.js';
+
+/* =========================================================================
+ * 浏览器渲染器
+ *
+ * 这个文件只画画和收输入,一行游戏逻辑都没有。引擎当初被要求写成纯函数
+ * （不碰终端、不碰文件系统、不用 Math.random），回报就在这里：同一份
+ * src/engine.js 同时驱动终端版和这个 canvas 版，两边行为逐帧一致。
+ * ========================================================================= */
+
+const QS    = new URLSearchParams(location.search);
+const BOT   = QS.get('bot') === '1';
+const SEED0 = QS.has('seed') ? (parseInt(QS.get('seed'), 10) >>> 0) : null;
+
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d', { alpha: false, willReadFrequently: true });
+
+const el = {
+  score:  document.getElementById('score'),
+  best:   document.getElementById('best'),
+  meta:   document.getElementById('meta'),
+  start:  document.getElementById('start'),
+  over:   document.getElementById('over'),
+  oScore: document.getElementById('oScore'),
+  oJumps: document.getElementById('oJumps'),
+  oBest:  document.getElementById('oBest'),
+  oSeed:  document.getElementById('oSeed'),
+};
+
+/* ----------------------------- 画面尺寸 ----------------------------- */
+let CW = 0, CH = 0, PX = 0, PY = 0;      // 画布像素 / 每世界单位对应多少像素
+
+function resize(){
+  const r   = cv.getBoundingClientRect();
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  CW = Math.max(320, Math.round((r.width  || 900) * dpr));
+  CH = Math.max(200, Math.round((r.height || 495) * dpr));
+  cv.width = CW; cv.height = CH;
+  PX = CW / W;
+  PY = CH / VIEW_H;
+}
+addEventListener('resize', resize);
+
+/* ----------------------------- 调色 ----------------------------- */
+// 随高度推进的天空。低空暖、高空冷，让「爬升」这件事被看见。
+const SKIES = [
+  { at:   0, top: [ 44,  62, 108], bot: [122, 104, 138] },
+  { at: 180, top: [ 30,  44,  92], bot: [ 92,  74, 132] },
+  { at: 420, top: [ 20,  26,  66], bot: [ 58,  44, 104] },
+  { at: 900, top: [ 10,  12,  38], bot: [ 32,  22,  72] },
+];
+const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+const rgb = a => 'rgb(' + a[0] + ',' + a[1] + ',' + a[2] + ')';
+
+function skyAt(h){
+  let i = 0;
+  while (i < SKIES.length - 2 && h > SKIES[i + 1].at) i++;
+  const a = SKIES[i], b = SKIES[i + 1];
+  const t = Math.max(0, Math.min(1, (h - a.at) / (b.at - a.at)));
+  return { top: mix(a.top, b.top, t), bot: mix(a.bot, b.bot, t) };
+}
+
+const SKIN = {
+  [PLAT.NORMAL]:  { face: '#7ee0a4', edge: '#3f9a6a' },
+  [PLAT.MOVING]:  { face: '#7cc8f5', edge: '#3a7fae' },
+  [PLAT.FRAGILE]: { face: '#e8bd7c', edge: '#a37438' },
+  [PLAT.SPRING]:  { face: '#f59ad4', edge: '#a94f8c' },
+};
+
+/* ----------------------------- 视差星点 ----------------------------- */
+const STARS = (function(){
+  let t = 0x9e3779b9;
+  const rnd = () => {
+    t = (t + 0x6D2B79F5) | 0;
+    let x = Math.imul(t ^ (t >>> 15), 1 | t);
+    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+  const out = [];
+  const layers = [[70, 0.10, 1.0], [40, 0.24, 1.6], [18, 0.42, 2.5]];
+  for (const L of layers){
+    for (let i = 0; i < L[0]; i++){
+      out.push({ x: rnd() * W, y: rnd() * 120, depth: L[1], r: L[2], a: 0.22 + rnd() * 0.55 });
+    }
+  }
+  return out;
+})();
+
+/* ----------------------------- 粒子 ----------------------------- */
+const dust = [];
+function puff(x, y, n){
+  for (let i = 0; i < n; i++){
+    const a  = Math.random() * Math.PI * 2;
+    const sp = 2 + Math.random() * 8;
+    const life = 0.3 + Math.random() * 0.35;
+    dust.push({
+      x, y,
+      vx: Math.cos(a) * sp,
+      vy: Math.abs(Math.sin(a)) * sp * 0.4 + 1.5,
+      life, max: life,
+      r: 0.1 + Math.random() * 0.2,
+    });
+  }
+}
+function stepDust(dt){
+  for (let i = dust.length - 1; i >= 0; i--){
+    const p = dust[i];
+    p.life -= dt;
+    if (p.life <= 0){ dust.splice(i, 1); continue; }
+    p.vy -= 44 * dt;
+    p.x  += p.vx * dt;
+    p.y  += p.vy * dt;
+  }
+}
+
+/* ----------------------------- 状态 ----------------------------- */
+let game = null;
+let mode = 'menu';                  // menu | play | over
+let camRender = 0;                  // 渲染相机，平滑跟随逻辑相机
+let shake = 0, squash = 0, lastJumps = 0;
+let frames = 0, acc = 0, last = 0;
+
+const keys = { left: false, right: false };
+const best = () => Number(localStorage.getItem('jumpwow.best') || 0);
+
+function begin(seed){
+  game = createGame(seed != null ? seed : ((Math.random() * 0xffffffff) >>> 0));
+  camRender = game.cam;
+  dust.length = 0;
+  lastJumps = 0; shake = 0; squash = 0; acc = 0;
+  mode = 'play';
+  el.start.classList.add('hide');
+  el.over.classList.add('hide');
+}
+
+function finish(){
+  mode = 'over';
+  const b = Math.max(best(), game.score);
+  try { localStorage.setItem('jumpwow.best', String(b)); } catch (e) {}
+  el.oScore.textContent = game.score;
+  el.oJumps.textContent = game.stats.jumps;
+  el.oBest.textContent  = b;
+  el.oSeed.textContent  = 'SEED ' + game.seed;
+  el.over.classList.remove('hide');
+}
+
+/* ----------------------------- 输入 ----------------------------- */
+// 浏览器有 keyup，所以这里是真正的「按住持续移动」,比终端版好按得多
+addEventListener('keydown', e => {
+  if (e.code === 'ArrowLeft'  || e.code === 'KeyA') keys.left  = true;
+  if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = true;
+  if (e.code === 'Space' || e.code === 'Enter'){
+    e.preventDefault();
+    if (mode !== 'play') begin();
+  }
+});
+addEventListener('keyup', e => {
+  if (e.code === 'ArrowLeft'  || e.code === 'KeyA') keys.left  = false;
+  if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = false;
+});
+addEventListener('blur', () => { keys.left = keys.right = false; });
+
+function touch(e){
+  if (mode !== 'play') return;
+  e.preventDefault();
+  keys.left = keys.right = false;
+  const r = cv.getBoundingClientRect();
+  for (const t of e.touches){
+    if (t.clientX - r.left < r.width / 2) keys.left = true; else keys.right = true;
+  }
+}
+cv.addEventListener('touchstart', touch, { passive: false });
+cv.addEventListener('touchmove',  touch, { passive: false });
+cv.addEventListener('touchend', e => {
+  if (!e.touches.length) keys.left = keys.right = false;
+}, { passive: true });
+
+document.getElementById('btnStart').onclick = () => begin(SEED0);
+document.getElementById('btnAgain').onclick = () => begin();
+
+/* ----------------------------- 绘制 ----------------------------- */
+const sx = wx => wx * PX;
+const sy = wy => CH - (wy - camRender) * PY;
+
+function roundRect(x, y, w, h, r){
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y,     x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x,     y + h, rr);
+  ctx.arcTo(x,     y + h, x,     y,     rr);
+  ctx.arcTo(x,     y,     x + w, y,     rr);
+  ctx.closePath();
+}
+
+function drawPlatform(pl){
+  const skin = SKIN[pl.type];
+  const w = PLAT_W * PX;
+  const h = Math.max(6, 0.5 * PY);
+  const y = sy(pl.y) - h * 0.35;
+
+  // 环形世界：跨接缝的平台要画两遍
+  for (const off of [-W, 0, W]){
+    const x = sx(pl.x + off) - w / 2;
+    if (x > CW || x + w < 0) continue;
+
+    ctx.fillStyle = skin.edge;
+    roundRect(x, y + h * 0.45, w, h * 0.9, h * 0.4); ctx.fill();
+
+    ctx.fillStyle = skin.face;
+    roundRect(x, y, w, h, h * 0.42); ctx.fill();
+
+    if (pl.type === PLAT.SPRING){
+      ctx.fillStyle = 'rgba(255,255,255,.88)';
+      const cx = x + w / 2, t = h * 0.5;
+      ctx.beginPath();
+      ctx.moveTo(cx - t, y + h * 0.2);
+      ctx.lineTo(cx,     y - h * 0.5);
+      ctx.lineTo(cx + t, y + h * 0.2);
+      ctx.closePath(); ctx.fill();
+    }
+    if (pl.type === PLAT.FRAGILE){
+      ctx.strokeStyle = 'rgba(0,0,0,.3)';
+      ctx.lineWidth = Math.max(1, h * 0.12);
+      ctx.beginPath();
+      for (let i = 1; i < 4; i++){
+        const gx = x + (w * i) / 4;
+        ctx.moveTo(gx, y + h * 0.12);
+        ctx.lineTo(gx - h * 0.2, y + h * 0.88);
+      }
+      ctx.stroke();
+    }
+  }
+}
+
+function drawPlayer(p){
+  const base = 0.95 * PY;
+  // 上升拉长、落地压扁,一点点形变就能让跳跃有分量
+  const stretch = Math.max(-0.3, Math.min(0.28, p.vy / 95)) - squash;
+  const w = base * (1 - stretch * 0.6);
+  const h = base * (1 + stretch);
+  const y = sy(p.y) - h;
+
+  for (const off of [-W, 0, W]){
+    const x = sx(p.x + off) - w / 2;
+    if (x > CW || x + w < 0) continue;
+
+    ctx.fillStyle = 'rgba(0,0,0,.25)';
+    roundRect(x + w * 0.08, y + h * 0.1, w, h, w * 0.3); ctx.fill();
+
+    ctx.fillStyle = '#ffd76b';
+    roundRect(x, y, w, h, w * 0.3); ctx.fill();
+
+    ctx.fillStyle = '#2b2210';
+    const ew = w * 0.15, eh = h * 0.17, ey = y + h * 0.3;
+    const dir = keys.right ? w * 0.09 : keys.left ? -w * 0.09 : 0;
+    roundRect(x + w * 0.26 + dir, ey, ew, eh, ew * 0.4); ctx.fill();
+    roundRect(x + w * 0.59 + dir, ey, ew, eh, ew * 0.4); ctx.fill();
+  }
+}
+
+function render(){
+  const h = game ? game.maxY : 0;
+  const sky = skyAt(h);
+
+  const g = ctx.createLinearGradient(0, 0, 0, CH);
+  g.addColorStop(0, rgb(sky.top));
+  g.addColorStop(1, rgb(sky.bot));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, CW, CH);
+
+  ctx.save();
+  if (shake > 0.002){
+    ctx.translate((Math.random() - 0.5) * shake * PX,
+                  (Math.random() - 0.5) * shake * PY);
+  }
+
+  // 视差星点：每层按 depth 跟随相机，制造纵深
+  ctx.fillStyle = '#fff';
+  for (const st of STARS){
+    const wy = st.y + Math.floor((camRender * st.depth) / 120) * 120;
+    let py = CH - ((wy - camRender * st.depth) % 120) / 120 * CH;
+    py = ((py % CH) + CH) % CH;
+    ctx.globalAlpha = st.a * 0.75;
+    ctx.beginPath();
+    ctx.arc(sx(st.x), py, st.r * (PY / 26 + 0.5), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  if (game){
+    for (const pl of game.platforms){
+      if (pl.broken) continue;
+      const y = sy(pl.y);
+      if (y < -50 || y > CH + 50) continue;
+      drawPlatform(pl);
+    }
+
+    ctx.fillStyle = 'rgba(255,255,255,.8)';
+    for (const p of dust){
+      ctx.globalAlpha = Math.max(0, p.life / p.max) * 0.8;
+      ctx.beginPath();
+      ctx.arc(sx(p.x), sy(p.y), Math.max(1, p.r * PY), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    drawPlayer(game.player);
+  }
+
+  ctx.restore();
+
+  // 顶部压暗，让 HUD 读得清
+  const vg = ctx.createLinearGradient(0, 0, 0, CH * 0.3);
+  vg.addColorStop(0, 'rgba(0,0,0,.38)');
+  vg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, CW, CH * 0.3);
+}
+
+/* ----------------------------- 主循环 ----------------------------- */
+function frame(now){
+  requestAnimationFrame(frame);
+  if (!last) last = now;
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.25) dt = 0.25;
+  frames++;
+
+  if (mode === 'play' && game){
+    acc += dt;
+    let guard = 0;
+    while (acc >= STEP && guard++ < 6){
+      acc -= STEP;
+      step(game, BOT ? botInput(game) : keys);
+
+      // 落地了：扬尘 + 挤压 + 轻微震动
+      if (game.stats.jumps > lastJumps){
+        lastJumps = game.stats.jumps;
+        puff(game.player.x, game.player.y, 7);
+        squash = 0.26;
+        shake = Math.min(0.45, shake + 0.16);
+      }
+      if (!game.alive){ finish(); break; }
+    }
+
+    camRender += (game.cam - camRender) * Math.min(1, dt * 9);
+    squash *= Math.pow(0.001, dt);
+    shake  *= Math.pow(0.0004, dt);
+    stepDust(dt);
+
+    el.score.textContent = game.score;
+    const b = best();
+    el.best.textContent = b ? 'BEST ' + b : '';
+    el.meta.textContent = 'SEED ' + game.seed + '\n跳跃 ' + game.stats.jumps;
+  }
+
+  render();
+}
+
+/* ----------------------------- 诊断出口 ----------------------------- */
+/* 只读。给无头闸门用,没有它，浏览器测试只能靠截图猜。 */
+window.__DIAG__ = {
+  ready: false,
+  get frames(){ return frames; },
+  get mode(){ return mode; },
+  get seed(){ return game ? game.seed : null; },
+  get score(){ return game ? game.score : 0; },
+  get alive(){ return game ? game.alive : false; },
+  get jumps(){ return game ? game.stats.jumps : 0; },
+  get platforms(){ return game ? game.platforms.length : 0; },
+  get playerPos(){ return game ? { x: game.player.x, y: game.player.y } : null; },
+  get dust(){ return dust.length; },
+  start(seed){ begin(seed); return true; },
+  /** 采样画布，返回不同颜色的个数。证明真的画了东西，而不是一块纯色。 */
+  sampleColors(){
+    const n = 20, set = new Set();
+    for (let i = 0; i < n; i++){
+      for (let j = 0; j < n; j++){
+        const d = ctx.getImageData(
+          Math.floor((i + 0.5) * CW / n),
+          Math.floor((j + 0.5) * CH / n), 1, 1).data;
+        set.add((d[0] >> 3) + ',' + (d[1] >> 3) + ',' + (d[2] >> 3));
+      }
+    }
+    return set.size;
+  },
+};
+
+/* ----------------------------- 启动 ----------------------------- */
+resize();
+requestAnimationFrame(frame);
+window.__DIAG__.ready = true;
+
+if (BOT) begin(SEED0);          // 无头测试用：跳过点击直接开局
+el.best.textContent = best() ? 'BEST ' + best() : '';
+</script>
+</body>
+</html>
