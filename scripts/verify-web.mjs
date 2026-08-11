@@ -29,6 +29,9 @@ import { startServer } from './serve.mjs';
 
 const HEADFUL = !!process.env.HEADFUL;
 const BOT_SEC = Number(process.env.BOT_SEC || 18);
+// 分享图上「不是背景」的像素至少要占这么多。实测 5.28%（39927 像素），
+// 取三分之一。它只抓「整块内容没画出来」，不是排版基准。见第 09 条注释。
+const CARD_INK_MIN = Number(process.env.CARD_INK_MIN || 0.0175);
 const ART     = path.resolve('artifacts');
 
 const checks = [];
@@ -183,13 +186,32 @@ try{
 
   await page.screenshot({ path: path.join(ART, 'web-02-play.png') });
 
-  /* --- 09 分享卡片真的画出了像素 --- */
+  /* --- 09 分享卡片真的画出了内容 ---
+   *
+   * 这条以前读 cardDrawn:「卡片正中心那个点是否非透明」。它永远为真。
+   * 画卡片的第一件事就是把渐变天色和压暗层铺满整张画布，中心那个点
+   * 必然不透明、必然非黑,标题、名字、190px 的大分数、平台、种子行
+   * 一个都没画出来，它也照样绿。一条永远为真的断言比没有断言更糟：
+   * 它占着一个位置，让人以为这块覆盖到了。
+   *
+   * 现在比的是「和只有背景的同尺寸画面差了多少像素」。背景是无条件画的，
+   * 所以差异只可能来自内容。内容全没画 → 0%，这才分得开。
+   *
+   * CARD_INK_MIN 与实测值耦合：实测 5.28%，下限取三分之一 1.75%。只用来抓
+   * 「整块内容没画出来」，不是用来量排版好不好看。改了卡片布局要重测。
+   */
   const card = await page.evaluate(() => {
     window.__DIAG__.makeCard();
-    return window.__DIAG__.cardDrawn;
+    return { drawn: window.__DIAG__.cardDrawn, ink: window.__DIAG__.cardInk() };
   });
-  check('09 分享卡片画出真实内容', card === true,
-        card ? '中心点有非透明像素' : '卡片是空的');
+  metrics.cardInkRatio = card.ink.ratio;
+  metrics.cardInkPixels = card.ink.ink;
+  const inkOk = card.ink.drawn === true && card.ink.ratio >= CARD_INK_MIN;
+  check('09 分享卡片画出真实内容（与纯背景逐像素比）', inkOk && card.drawn === true,
+        card.ink.ink + ' 个像素与纯背景不同，占 ' + (card.ink.ratio * 100).toFixed(2) +
+        '%（下限 ' + (CARD_INK_MIN * 100).toFixed(2) + '%）' +
+        (card.ink.drawn ? '' : ' · 卡片根本没画过') +
+        (inkOk ? '' : ' · 只有背景，内容没画出来'));
 
   await page.screenshot({ path: path.join(ART, 'web-03-card.png') });
 

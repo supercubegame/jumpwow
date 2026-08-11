@@ -134,6 +134,9 @@ jobs:
               const m = web.metrics || {};
               body += '\n**浏览器**\n\n';
               body += '- 约 ' + m.fps + ' fps，画面采样颜色 ' + m.menuColors + ' → ' + m.playColors + ' 种\n';
+              // 阈值要按实测值收紧，所以这个数必须能从评论里直接读到
+              body += '- 分享图内容像素 ' + (m.cardInkPixels == null ? '?' : m.cardInkPixels) +
+                      '（占 ' + (m.cardInkRatio == null ? '?' : (m.cardInkRatio * 100).toFixed(2) + '%') + '）\n';
               body += '- 机器人在浏览器里 高度 ' + m.botScore + ' · 跳跃 ' + m.botJumps + '\n';
             }
 
