@@ -21,6 +21,7 @@ import { chromium } from 'playwright';
 import fs from 'node:fs/promises';
 import fss from 'node:fs';
 import path from 'node:path';
+import http from 'node:http';
 import { createGame, step } from '../src/engine.js';
 import { botInput } from '../src/bot.js';
 import { createRecorder } from '../src/replay.js';
@@ -36,19 +37,36 @@ function check(name, ok, detail = ''){
   console.log('[' + (ok ? '  ok  ' : ' FAIL ') + '] ' + name + (detail ? '  —  ' + detail : ''));
 }
 
-/** 轮询到条件成立或超时。慢机器上不能靠 sleep 固定时长。 */
+/**
+ * 轮询到条件成立或超时。慢机器上不能靠 sleep 固定时长。
+ *
+ * 传进来的函数必须返回布尔。别返回计数,0 是 falsy，会被当成
+ * 「条件还没成立」一直等到超时，报告里最后写成 null，看着像取值失败。
+ */
 async function until(page, fn, opt){
   opt = opt || {};
   const timeout  = opt.timeout  || 15000;
   const interval = opt.interval || 200;
   const end = Date.now() + timeout;
-  let last;
   while (Date.now() < end){
-    try { last = await page.evaluate(fn, opt.arg); } catch (e) { last = undefined; }
-    if (last) return last;
+    let v;
+    try { v = await page.evaluate(fn, opt.arg); } catch (e) { v = undefined; }
+    if (v) return true;
     await page.waitForTimeout(interval);
   }
-  return last || null;
+  return false;
+}
+
+/** 玩到死，产出一局可提交的样本。理由见 scripts/verify.mjs 里的同名函数。 */
+function playToDeath(seed, climb = 900, cap = 20000){
+  const g = createGame(seed);
+  const rec = createRecorder();
+  for (let i = 0; i < cap && g.alive; i++){
+    const input = i < climb ? botInput(g) : { left: false, right: true };
+    rec.push(input);
+    step(g, input);
+  }
+  return { seed: g.seed, log: rec.encode(), score: g.score, alive: g.alive };
 }
 
 const IGNORE = [/favicon\.ico/i, /SwiftShader/i, /GroupMarkerNotSet/i, /Fontconfig/i];
@@ -64,22 +82,21 @@ try{
   server = await startServer(0);
   console.log('\n内嵌服务器 → ' + server.url + '\n');
 
-  /* 先往榜里塞两条真实成绩，这样排行榜断言有东西可看。
-     用真的重放日志,服务端不接受别的。 */
+  /* 先往榜里塞两条真实成绩，排行榜断言才有东西可看。
+     必须是真的能重放通过的局,服务端不接受别的。 */
+  const seeded = [];
   for (const [name, seed] of [['闸门甲', 1234], ['闸门乙', 5678]]){
-    const g = createGame(seed);
-    const rec = createRecorder();
-    for (let i = 0; i < 20000 && g.alive; i++){
-      const inp = i < 1200 ? botInput(g) : { left: false, right: false };  // 后半段放手，让它摔下去
-      rec.push(inp);
-      step(g, inp);
-    }
-    await fetch(server.url + '/api/scores', {
+    const run = playToDeath(seed);
+    if (run.alive){ seeded.push('seed ' + seed + ' 没能玩死'); continue; }
+    const r = await fetch(server.url + '/api/scores', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name, seed, log: rec.encode() }),
+      body: JSON.stringify({ name, seed, log: run.log }),
     });
+    if (r.status !== 201) seeded.push('seed ' + seed + ' → HTTP ' + r.status + ' ' +
+                                      JSON.stringify(await r.json()).slice(0, 120));
   }
+  if (seeded.length) console.log('播种排行榜出问题：' + seeded.join(' / ') + '\n');
 
   browser = await chromium.launch({
     headless: !HEADFUL,
@@ -114,11 +131,13 @@ try{
   check('03 菜单画面非空白', colors0 >= 4, '采样到 ' + colors0 + ' 种颜色');
 
   /* --- 04 排行榜拉到数据并渲染 --- */
-  const rows = await until(page, () => window.__DIAG__.boardRows || 0, { timeout: 15000 });
-  metrics.boardRows = rows || 0;
+  const boardOk = await until(page, () => window.__DIAG__.boardRows >= 2, { timeout: 15000 });
+  const rows  = await page.evaluate(() => window.__DIAG__.boardRows);
   const apiUp = await page.evaluate(() => window.__DIAG__.apiUp);
-  check('04 排行榜从 API 拉到数据并渲染', apiUp === true && rows >= 2,
-        'apiUp=' + apiUp + ' · 渲染 ' + rows + ' 行');
+  metrics.boardRows = rows;
+  check('04 排行榜从 API 拉到数据并渲染', boardOk && apiUp === true,
+        'apiUp=' + apiUp + ' · 渲染 ' + rows + ' 行' +
+        (seeded.length ? ' · 播种失败：' + seeded.join('；') : ''));
 
   await page.screenshot({ path: path.join(ART, 'web-01-menu.png') });
 
@@ -143,14 +162,14 @@ try{
   check('07 游戏画面渲染出平台与角色', colors1 > colors0,
         '菜单 ' + colors0 + ' 种 → 游戏 ' + colors1 + ' 种');
 
-  /* --- 08 输入被记进日志（提交靠的就是它） --- */
+  /* --- 08 输入生效且被记进日志（提交靠的就是它） --- */
   const p0 = await page.evaluate(() => window.__DIAG__.playerPos);
   await page.keyboard.down('KeyD');
   const moved = await until(page, (o) => {
     const p = window.__DIAG__.playerPos;
-    if (!p || !o) return 0;
+    if (!p || !o) return false;
     const d = Math.abs(p.x - o.x);
-    return (d > 1 && d < 20) ? d : 0;      // 排除环形接缝造成的跳变
+    return d > 1 && d < 20;                 // 排除环形接缝造成的跳变
   }, { timeout: 10000, arg: p0 });
   await page.keyboard.up('KeyD');
   const log = await page.evaluate(() => ({
@@ -158,8 +177,8 @@ try{
   }));
   metrics.logTicks = log.ticks;
   metrics.logSize = log.size;
-  check('08 按键生效且被记入操作日志', !!moved && log.ticks > 30 && log.size > 0,
-        (moved ? '位移 ' + Number(moved).toFixed(2) : '没反应') +
+  check('08 按键生效且被记入操作日志', moved && log.ticks > 30 && log.size > 0,
+        (moved ? '角色横移了' : '按键没反应') +
         ' · 日志 ' + log.ticks + ' 帧 / ' + log.size + ' 字符');
 
   await page.screenshot({ path: path.join(ART, 'web-02-play.png') });
@@ -190,7 +209,7 @@ try{
   check('10 机器人在浏览器里存活', bot.alive,
         BOT_SEC + 's 后 高度 ' + bot.score + ' · 跳跃 ' + bot.jumps);
 
-  /* --- 11 零错误（放在离线测试之前，那一步会故意制造网络失败） --- */
+  /* --- 11-12 零错误（放在离线测试之前，那一步会故意制造网络失败） --- */
   check('11 无 console 报错', consoleErrors.length === 0,
         consoleErrors.slice(0, 3).join(' | ') || '干净');
   check('12 无未捕获异常', pageErrors.length === 0,
@@ -199,12 +218,10 @@ try{
   /* --- 13 API 挂掉时优雅降级 ---
      联机功能不可用，不该拖垮单机体验。 */
   {
-    const before = pageErrors.length;
     await page.goto('about:blank');
     await server.close();
     server = null;
 
-    // 换一个不带 API 的纯静态服务，模拟「只有前端被部署出去」的情况
     const staticSrv = await startStatic();
     try{
       const p2 = await browser.newPage({ viewport: { width: 900, height: 620 } });
@@ -213,13 +230,12 @@ try{
 
       await p2.goto(staticSrv.url + '/web/index.html', { waitUntil: 'domcontentloaded' });
       await until(p2, () => !!(window.__DIAG__ && window.__DIAG__.ready), { timeout: 20000 });
-      await until(p2, () => window.__DIAG__.apiUp === false, { timeout: 15000 });
+      const knowsOffline = await until(p2, () => window.__DIAG__.apiUp === false, { timeout: 15000 });
       await p2.click('#btnStart', { timeout: 8000 });
-      const ok = await until(p2, () => window.__DIAG__.mode === 'play', { timeout: 10000 });
-      const offlineApi = await p2.evaluate(() => window.__DIAG__.apiUp);
+      const canPlay = await until(p2, () => window.__DIAG__.mode === 'play', { timeout: 10000 });
 
-      check('13 排行榜不可用时游戏照常能玩', ok === true && offlineApi === false && errs.length === 0,
-            'apiUp=' + offlineApi + ' · 开局' + (ok ? '成功' : '失败') +
+      check('13 排行榜不可用时游戏照常能玩', knowsOffline && canPlay && errs.length === 0,
+            '识别到离线=' + knowsOffline + ' · 开局' + (canPlay ? '成功' : '失败') +
             (errs.length ? ' · 抛异常 ' + errs[0] : ' · 无异常'));
       await p2.screenshot({ path: path.join(ART, 'web-04-offline.png') });
     } finally {
@@ -238,7 +254,6 @@ try{
 
 /** 不挂 API 的纯静态服务，用来验降级路径。 */
 async function startStatic(){
-  const http = await import('node:http');
   const ROOT = path.resolve('.');
   const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8' };
   const srv = http.createServer(async (req, res) => {
