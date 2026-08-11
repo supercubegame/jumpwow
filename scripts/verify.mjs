@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* ===========================================================================
- * JUMPWOW 验证闸门
+ * JUMPWOW 引擎闸门
  * ===========================================================================
  *
  * 一条命令回答一个问题：这份代码现在还能不能玩？
@@ -16,6 +16,10 @@
  *   SEEDS=40 SURVIVE_SEC=90 npm run verify     加严
  * =========================================================================== */
 
+// 必须在 import serve.mjs 之前设好，api.mjs 在模块加载时就读这个变量
+process.env.SCORES_FILE = process.env.SCORES_FILE ||
+                          new URL('../artifacts/test-scores.json', import.meta.url).pathname;
+
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,6 +28,7 @@ import {
   MAX_JUMP_H, W, STEP,
 } from '../src/engine.js';
 import { botInput } from '../src/bot.js';
+import { createRecorder, replay, encodeLog, decodeLog } from '../src/replay.js';
 
 const SEEDS       = Number(process.env.SEEDS || 24);
 const SURVIVE_SEC = Number(process.env.SURVIVE_SEC || 60);
@@ -35,11 +40,13 @@ const TEST_DIR    = path.resolve('test');
 const checks = [];
 function check(name, ok, detail = ''){
   checks.push({ name, ok: !!ok, detail: String(detail) });
-  console.log(`[${ok ? '  ok  ' : ' FAIL '}] ${name}${detail ? '  —  ' + detail : ''}`);
+  console.log('[' + (ok ? '  ok  ' : ' FAIL ') + '] ' + name + (detail ? '  —  ' + detail : ''));
 }
 
 const metrics = {};
 const extra = {};
+
+fs.mkdirSync(ART, { recursive: true });
 
 /* --- 01 单元测试 ---
  *
@@ -57,7 +64,6 @@ const extra = {};
     check('01 单元测试全绿', false, '在 test/ 下没找到任何 *.test.js,测试文件被挪走了？');
     metrics.unitFiles = 0;
   } else {
-    // 显式指定 tap，否则 reporter 会随是否 TTY 变化，解析逻辑跟着漂
     const r = spawnSync(process.execPath, ['--test', '--test-reporter=tap', ...files],
                         { encoding: 'utf8' });
     const out = ((r.stdout || '') + (r.stderr || '')).replace(/\r/g, '');
@@ -85,10 +91,10 @@ const extra = {};
     }
 
     check('01 单元测试全绿', ok,
-          ok ? `${files.length} 个文件 · ${pass} 条通过`
-             : (failing.length ? `挂了 ${failing.length} 条：${failing.slice(0, 3).join(' / ')}`
-                               : `退出码 ${r.status}，未能解析出测试名，见报告里的 unitTail`) +
-               (errLines.length ? ` ｜ ${errLines[0]}` : ''));
+          ok ? files.length + ' 个文件 · ' + pass + ' 条通过'
+             : (failing.length ? '挂了 ' + failing.length + ' 条：' + failing.slice(0, 3).join(' / ')
+                               : '退出码 ' + r.status + '，未能解析出测试名，见报告里的 unitTail') +
+               (errLines.length ? ' ｜ ' + errLines[0] : ''));
 
     if (!ok) console.log('\n--- 单元测试输出（末尾 70 行）---\n' + extra.unitTail + '\n');
   }
@@ -107,9 +113,9 @@ const extra = {};
   const seen = new Set();
   for (let i = 0; i < 12; i++){
     const s = createGame(1000 + i);
-    seen.add(s.platforms.slice(0, 8).map(p => `${Math.round(p.x)}:${Math.round(p.y * 10)}`).join(','));
+    seen.add(s.platforms.slice(0, 8).map(p => Math.round(p.x) + ':' + Math.round(p.y * 10)).join(','));
   }
-  check('03 不同种子生成不同地图', seen.size === 12, `12 个种子产生 ${seen.size} 张不同的图`);
+  check('03 不同种子生成不同地图', seen.size === 12, '12 个种子产生 ' + seen.size + ' 张不同的图');
 }
 
 /* --- 04 可达性不变量 --- */
@@ -126,7 +132,8 @@ const extra = {};
   }
   metrics.worstGap = Math.round(worst * 100) / 100;
   check('04 无跳不上去的死图', bad === 0,
-        `60 个种子最大间距 ${metrics.worstGap} / 上限 ${MAX_JUMP_H.toFixed(2)}（seed ${worstSeed}）`);
+        '60 个种子最大间距 ' + metrics.worstGap + ' / 上限 ' + MAX_JUMP_H.toFixed(2) +
+        '（seed ' + worstSeed + '）');
 }
 
 /* --- 05 数值健康 --- */
@@ -136,8 +143,8 @@ const extra = {};
   for (let i = 0; i < 8000 && s.alive && !bad; i++){
     step(s, botInput(s));
     const p = s.player;
-    if (![p.x, p.y, p.vx, p.vy, s.cam, s.maxY].every(Number.isFinite)) bad = `第 ${i} 步出现非有限值`;
-    if (p.x < 0 || p.x >= W) bad = `第 ${i} 步 x=${p.x} 越出环形世界`;
+    if (![p.x, p.y, p.vx, p.vy, s.cam, s.maxY].every(Number.isFinite)) bad = '第 ' + i + ' 步出现非有限值';
+    if (p.x < 0 || p.x >= W) bad = '第 ' + i + ' 步 x=' + p.x + ' 越出环形世界';
   }
   check('05 无 NaN / 无坐标越界', !bad, bad || '8000 步内数值健康');
 }
@@ -152,7 +159,7 @@ const extra = {};
   metrics.platformsLive = late;
   metrics.platformsGenerated = s.generated;
   check('06 平台数组有界（无泄漏）', late <= early + 4,
-        `活跃 ${early} → ${late}，累计生成 ${s.generated}`);
+        '活跃 ' + early + ' → ' + late + '，累计生成 ' + s.generated);
 }
 
 /* --- 07-09 机器人多种子试玩：这游戏到底能不能玩 --- */
@@ -174,47 +181,44 @@ const extra = {};
   const died   = runs.filter(r => !r.alive);
   const scores = runs.map(r => r.score).sort((a, b) => a - b);
   const median = scores[scores.length >> 1];
-  const totalJumps = runs.reduce((a, r) => a + r.jumps, 0);
   metrics.medianScore = median;
   metrics.minScore = scores[0];
   metrics.maxScore = scores[scores.length - 1];
-  metrics.totalJumps = totalJumps;
+  metrics.totalJumps = runs.reduce((a, r) => a + r.jumps, 0);
   metrics.seeds = SEEDS;
   metrics.surviveSec = SURVIVE_SEC;
   if (died.length) extra.deaths = died;
 
   check('07 机器人在所有种子上都活满全程', died.length === 0,
         died.length
-          ? `${died.length}/${SEEDS} 局摔死：` +
-            died.slice(0, 3).map(d => `seed ${d.seed} 撑 ${d.sec}s 得分 ${d.score}`).join(' / ')
-          : `${SEEDS} 局 × ${SURVIVE_SEC}s 全部存活`);
+          ? died.length + '/' + SEEDS + ' 局摔死：' +
+            died.slice(0, 3).map(d => 'seed ' + d.seed + ' 撑 ' + d.sec + 's 得分 ' + d.score).join(' / ')
+          : SEEDS + ' 局 × ' + SURVIVE_SEC + 's 全部存活');
 
   check('08 高度中位数达标', median >= MIN_SCORE,
-        `中位 ${median} / 门槛 ${MIN_SCORE}，区间 ${scores[0]}-${scores[scores.length - 1]}`);
+        '中位 ' + median + ' / 门槛 ' + MIN_SCORE + '，区间 ' + scores[0] + '-' + scores[scores.length - 1]);
 
   check('09 特殊平台确实被用到', runs.some(r => r.springs > 0) && runs.some(r => r.broken > 0),
-        `累计 ${totalJumps} 次跳跃，弹簧 ${runs.reduce((a, r) => a + r.springs, 0)} 次，` +
-        `踩碎 ${runs.reduce((a, r) => a + r.broken, 0)} 块`);
+        '累计 ' + metrics.totalJumps + ' 次跳跃，弹簧 ' + runs.reduce((a, r) => a + r.springs, 0) +
+        ' 次，踩碎 ' + runs.reduce((a, r) => a + r.broken, 0) + ' 块');
 }
 
 /* --- 10 难度确实在爬升 --- */
 {
   const lo = difficultyAt(0), mid = difficultyAt(200), hi = difficultyAt(500);
   check('10 难度随高度单调上升并封顶', lo === 0 && mid > 0 && mid < 1 && hi === 1,
-        `d(0)=${lo} d(200)=${mid} d(500)=${hi}`);
+        'd(0)=' + lo + ' d(200)=' + mid + ' d(500)=' + hi);
 }
 
 /* --- 11 性能预算 --- */
 {
   const t0 = performance.now();
   const s = createGame(2024);
-  const ticks = 60 * 60 * 5;                      // 模拟 5 分钟
-  for (let i = 0; i < ticks && s.alive; i++) step(s, botInput(s));
+  for (let i = 0; i < 60 * 60 * 5 && s.alive; i++) step(s, botInput(s));
   const ms = performance.now() - t0;
   metrics.perfMs = Math.round(ms);
-  metrics.perfTicks = s.ticks;
   check('11 5 分钟模拟在预算内', ms < PERF_BUDGET,
-        `${Math.round(ms)}ms / 预算 ${PERF_BUDGET}ms（${s.ticks} 步）`);
+        Math.round(ms) + 'ms / 预算 ' + PERF_BUDGET + 'ms（' + s.ticks + ' 步）');
 }
 
 /* --- 12 CLI 能跑起来并返回正确退出码 --- */
@@ -222,10 +226,136 @@ const extra = {};
   const r = spawnSync(process.execPath, ['bin/jumpwow.js', '--bench', '20', '--seed', '99'],
                       { encoding: 'utf8', timeout: 30000 });
   let parsed = null;
-  try { parsed = JSON.parse(r.stdout); } catch {}
+  try { parsed = JSON.parse(r.stdout); } catch (e) {}
   check('12 CLI 无头模式正常退出', r.status === 0 && parsed && parsed.survived === true,
-        parsed ? `退出码 ${r.status} · 得分 ${parsed.score} · ${parsed.wallMs}ms`
-               : `退出码 ${r.status} · 输出无法解析：${(r.stderr || r.stdout || '').slice(0, 200)}`);
+        parsed ? '退出码 ' + r.status + ' · 得分 ' + parsed.score + ' · ' + parsed.wallMs + 'ms'
+               : '退出码 ' + r.status + ' · 输出无法解析：' + (r.stderr || r.stdout || '').slice(0, 200));
+}
+
+/* =========================================================================
+ * 13-17 重放验证与排行榜服务端
+ *
+ * 排行榜的反作弊完全建立在「引擎确定性」上。这几条就是那个前提的
+ * 直接检验,一旦有人往引擎里塞了 Date.now() 或 Math.random()，
+ * 第 14 条会立刻红，而不是等到线上被人刷榜才发现。
+ * ========================================================================= */
+
+/* --- 13 日志编解码往返 --- */
+{
+  const cases = [[], [0], [0,0,0,2,2], Array.from({ length: 777 }, (_, i) => i % 3)];
+  let bad = null;
+  for (const c of cases){
+    const back = decodeLog(encodeLog(c));
+    if (back.length !== c.length || back.some((v, i) => v !== c[i])){
+      bad = c.length + ' 帧的用例往返后不一致';
+      break;
+    }
+  }
+  const big = encodeLog(new Array(5000).fill(2));
+  metrics.rleSample = big.length;
+  check('13 输入日志编解码往返无损', !bad && big.length < 12,
+        bad || ('5000 帧同键压到 ' + big.length + ' 字符'));
+}
+
+/* --- 14 重放与实跑逐字段一致 --- */
+let honestRun = null;
+{
+  const live = createGame(20260811);
+  const rec = createRecorder();
+  for (let i = 0; i < 4000 && live.alive; i++){
+    const input = botInput(live);
+    rec.push(input);
+    step(live, input);
+  }
+  const log = rec.encode();
+  const r = replay(live.seed, log);
+  const same = r.score === live.score && r.ticks === live.ticks && r.jumps === live.stats.jumps;
+  metrics.replayScore = r.score;
+  metrics.replayLogChars = log.length;
+  honestRun = { seed: live.seed, log, score: live.score, alive: live.alive };
+
+  check('14 重放结果与实跑逐字段一致', same,
+        same ? ('分数 ' + r.score + ' · ' + r.ticks + ' 帧 · 日志 ' + log.length + ' 字符')
+             : ('实跑 ' + live.score + '/' + live.ticks + '，重放 ' + r.score + '/' + r.ticks +
+                ',引擎里混进了外部状态'));
+}
+
+/* --- 15 篡改会被发现 --- */
+{
+  const { seed, log, score } = honestRun;
+  const wrongSeed = replay(seed + 1, log).score;
+  const tampered  = log.replace(/^./, c => (c === '0' ? '1' : '0'));
+  const wrongLog  = tampered === log ? null : replay(seed, tampered).score;
+  const ok = wrongSeed !== score && (wrongLog === null || wrongLog !== score);
+  check('15 换种子或改日志都会得到不同分数', ok,
+        '诚实 ' + score + ' · 换种子 ' + wrongSeed +
+        (wrongLog === null ? '' : ' · 改日志 ' + wrongLog));
+}
+
+/* --- 16-17 排行榜服务端 --- */
+{
+  const store = process.env.SCORES_FILE;
+  try { fs.rmSync(store, { force: true }); } catch (e) {}
+
+  const { startServer } = await import('../scripts/serve.mjs');
+  const srv = await startServer(0);
+  const api = srv.url + '/api/scores';
+
+  const post = async body => {
+    const r = await fetch(api, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return { status: r.status, body: await r.json() };
+  };
+
+  try{
+    // 16：提交一局真实成绩。故意带上一个夸张的 score 字段,
+    // 落库的必须是重放算出来的真值，不是这个。
+    const honest = await post({
+      name: '  闸门<script>  ', seed: honestRun.seed, log: honestRun.log,
+      score: 999999,
+    });
+
+    const list = await (await fetch(api + '?limit=5')).json();
+    const top = list.scores && list.scores[0];
+
+    const ok16 = honest.status === 201 &&
+                 honest.body.entry.score === honestRun.score &&
+                 honest.body.verified === true &&
+                 top && top.score === honestRun.score &&
+                 top.name === '闸门<script>'.slice(0, 16).trim();
+
+    metrics.serverRank = honest.body.rank;
+    check('16 服务端以重放值判分，忽略客户端上报的分数', ok16,
+          ok16 ? ('落库 ' + honest.body.entry.score + ' 分（客户端声称 999999），第 ' +
+                  honest.body.rank + ' 名，名字已消毒')
+               : ('HTTP ' + honest.status + ' ' + JSON.stringify(honest.body).slice(0, 200)));
+
+    // 17：几种伪造与畸形输入，全都必须被挡
+    const bad = [
+      ['空日志（这局还没结束）', { name: 'x', seed: 1, log: '' }],
+      ['畸形日志',              { name: 'x', seed: 1, log: '9zzz' }],
+      ['非法种子',              { name: 'x', seed: -5, log: honestRun.log }],
+      ['缺日志只报分数',        { name: 'x', seed: 1, score: 99999 }],
+      ['日志超长',              { name: 'x', seed: 1, log: '1'.repeat(30000) }],
+    ];
+    const rejected = [];
+    for (const [label, body] of bad){
+      const r = await post(body);
+      if (r.status >= 400) rejected.push(label);
+      else rejected.push('!!未挡住: ' + label);
+    }
+    const ok17 = rejected.every(x => !x.startsWith('!!'));
+    check('17 服务端拒绝伪造与畸形提交', ok17,
+          ok17 ? ('挡住 ' + rejected.length + ' 类：' + rejected.join('、'))
+               : rejected.filter(x => x.startsWith('!!')).join(' / '));
+
+  } finally {
+    await srv.close();
+    try { fs.rmSync(store, { force: true }); } catch (e) {}
+  }
 }
 
 /* ----------------------------- 汇总 ----------------------------- */
@@ -236,23 +366,22 @@ const report = {
   passed: checks.length - failed.length,
   total: checks.length,
   metrics,
-  failures: failed.map(f => `${f.name}: ${f.detail}`),
+  failures: failed.map(f => f.name + ': ' + f.detail),
   ...extra,
 };
 
-fs.mkdirSync(ART, { recursive: true });
 fs.writeFileSync(path.join(ART, 'verify-report.json'), JSON.stringify(report, null, 2));
 
 console.log('\n' + '-'.repeat(66));
-console.log(`  ${report.passed} / ${report.total} 项通过` +
-            `   ·   单测 ${metrics.unitPass ?? '?'} 条` +
-            `   ·   中位高度 ${metrics.medianScore}` +
-            `   ·   5min 模拟 ${metrics.perfMs}ms`);
+console.log('  ' + report.passed + ' / ' + report.total + ' 项通过' +
+            '   ·   单测 ' + (metrics.unitPass == null ? '?' : metrics.unitPass) + ' 条' +
+            '   ·   中位高度 ' + metrics.medianScore +
+            '   ·   5min 模拟 ' + metrics.perfMs + 'ms');
 console.log('-'.repeat(66));
 
 if (failed.length){
   console.log('\n失败项：');
-  for (const f of failed) console.log(`  x ${f.name}  ${f.detail}`);
+  for (const f of failed) console.log('  x ' + f.name + '  ' + f.detail);
   process.exit(1);
 }
 console.log('\n闸门通过。');
