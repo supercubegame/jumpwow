@@ -61,6 +61,9 @@ function fold(summary, text){
   return '<details><summary>' + summary + '</summary>\n\n```\n' + text + '\n```\n\n</details>';
 }
 
+const num = v => (v == null ? '?' : v);
+const pct = (v, digits) => (v == null ? '?' : (v * 100).toFixed(digits) + '%');
+
 /* 报告缺失。这一段是整个文件里最重要的部分,它出现的时候，正是你最没有
  * 别的线索可查的时候。 */
 function missingSection(gate){
@@ -86,12 +89,13 @@ function engSection(data){
     '### ' + (data.failures && data.failures.length ? '❌' : '✅') +
       ' 引擎闸门 — ' + data.passed + '/' + data.total + ' 项通过',
     '',
-    '- 单元测试 ' + (m.unitPass == null ? '?' : m.unitPass) + ' 条' +
+    '- 单元测试 ' + num(m.unitPass) + ' 条' +
       (m.unitFiles == null ? '' : '（' + m.unitFiles + ' 个文件）'),
     '- 机器人 ' + m.seeds + ' 局 × ' + m.surviveSec + 's，高度中位 ' + m.medianScore +
       '（' + m.minScore + '-' + m.maxScore + '）',
     '- 最大平台间距 ' + m.worstGap + '，活跃平台 ' + m.platformsLive,
     '- 5min 模拟 ' + m.perfMs + ' ms',
+    '- 规矩文件 ' + num(m.rulesLines) + ' 行（上限 200）',
   ];
   if (m.tamper){
     lines.push('- 反作弊：诚实 ' + m.tamper.honest + ' · 换种子 ' + m.tamper.wrongSeed +
@@ -106,11 +110,13 @@ function webSection(data){
     '### ' + (data.failures && data.failures.length ? '❌' : '✅') +
       ' 浏览器闸门 — ' + data.passed + '/' + data.total + ' 项通过',
     '',
-    '- 约 ' + m.fps + ' fps，画面采样颜色 ' + m.menuColors + ' → ' + m.playColors + ' 种',
-    // 阈值要按实测值收紧，所以这个数必须能从评论里直接读到
-    '- 分享图内容像素 ' + (m.cardInkPixels == null ? '?' : m.cardInkPixels) +
-      '（占 ' + (m.cardInkRatio == null ? '?' : (m.cardInkRatio * 100).toFixed(2) + '%') + '）',
+    '- 约 ' + m.fps + ' fps，画布 ' + num(m.canvas),
+    // 阈值要按实测值收紧，所以这两个数必须能从评论里直接读到
+    '- 画面内容色像素 ' + num(m.playInk) + '（占 ' + pct(m.playInkRatio, 3) +
+      '，菜单 ' + num(m.menuInk) + ' 个）',
+    '- 分享图内容像素 ' + num(m.cardInkPixels) + '（占 ' + pct(m.cardInkRatio, 2) + '）',
     '- 机器人在浏览器里 高度 ' + m.botScore + ' · 跳跃 ' + m.botJumps,
+    '- 采样颜色数 ' + num(m.menuColors) + ' → ' + num(m.playColors) + '（仅参考，不承重）',
   ].join('\n') + '\n';
 }
 
