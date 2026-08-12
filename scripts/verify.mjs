@@ -41,6 +41,20 @@ const WORKFLOW    = '.github/workflows/verify.yml';
 // 这个数字必须有断言守着：文件只会单向变长，而一句写在文件里的自我要求
 // 不阻止任何人。姊妹项目那份实测五轮之后涨到了 220 行，没人发现。
 const MAX_RULES_LINES = 200;
+// 报告 job 的每一步。supercubegame/image-grabber 有同一个 job，同样的 id、
+// 同样的名字,两个仓库各写各的，就是它们开始分叉的方式。
+//
+// 闸门按 **id** 定位步骤。显示名是标签，把断言挂在标签上等于「改个名字」
+// 就是「弄坏闸门」,而那正是当初把两边名字冻成一中一英的原因。名字另行
+// 断言成精确值，所以改名是主动变红，不是悄悄分叉。
+const REPORT_STEPS = [
+  { id: 'download', name: '下载闸门报告' },
+  { id: 'seed',     name: '种下兜底评论' },
+  { id: 'fetch',    name: '取 composer' },
+  { id: 'compose',  name: '合成报告' },
+  { id: 'post',     name: '回写报告' },
+  { id: 'verdict',  name: '闸门失败或报告降级则失败' },
+];
 
 const checks = [];
 function check(name, ok, detail = ''){
@@ -73,6 +87,28 @@ function playToDeath(seed, climbTicks = 1200, capTicks = 20000){
   }
   return { seed: g.seed, log: rec.encode(), score: g.score,
            ticks: g.ticks, jumps: g.stats.jumps, alive: g.alive };
+}
+
+/**
+ * 把一个 job 的文本切成步骤。一步从「六个空格 + `- `」开始，它的 id 和 name
+ * 在里面。按 id 定位是重点,理由见 REPORT_STEPS 的注释。
+ */
+function parseSteps(block){
+  const steps = [];
+  let cur = null;
+  for (const line of block.split('\n')){
+    if (/^ {6}- \S/.test(line)){
+      cur = { name: null, id: null, lines: [] };
+      steps.push(cur);
+    }
+    if (!cur) continue;
+    cur.lines.push(line);
+    const named = /^ {6}- name:\s*(.+?)\s*$/.exec(line);
+    if (named) cur.name = named[1];
+    const identified = /^ {8}id:\s*(\S+)\s*$/.exec(line);
+    if (identified) cur.id = identified[1];
+  }
+  return steps.map((s, i) => ({ ...s, index: i, text: s.lines.join('\n') }));
 }
 
 /* --- 01 单元测试 ---
@@ -408,12 +444,12 @@ const honest = playToDeath(20260811);
  * 那个 job 不 clone、在任何会失败的步骤之前就种下兜底评论、取脚本和回写
  * 都带重试、降级的报告自己说明自己是降级的。
  *
- * 报告 job 的步骤名保持英文，和 image-grabber 一字不差,两个仓库共用这段
- * 断言逻辑，各写各的就会各自漂。
+ * 步骤按 id 找，名字单独对。理由见 REPORT_STEPS 的注释。
  */
 {
   let problems = [];
   let detail = '';
+  let found = [];
   try{
     const wf = fs.readFileSync(path.resolve(WORKFLOW), 'utf8');
     const jobs = {};
@@ -441,25 +477,49 @@ const honest = playToDeath(20260811);
         }
       }
       if (!problems.length){
+        const steps = parseSteps(report);
+        const byId = new Map(steps.filter(s => s.id).map(s => [s.id, s]));
+        found = steps.map(s => (s.id || '(无 id)') + ' — ' + (s.name === null ? '(无名字)' : s.name));
+
         if (report.includes('actions/checkout')){
           problems.push('报告 job 又去 clone 整个仓库了：那正是 image-grabber run #51 里 exit 128 ' +
                         '的那一步，它把整条报告一起带走了。这个 job 要的是一个脚本文件，不是工作树');
         }
-        const seedAt = report.indexOf('> comment.md');
-        const postAt = report.indexOf('      - name: post report');
-        if (seedAt === -1) problems.push('没有任何地方写兜底 comment.md，composer 一旦加载失败，这个 job 就没东西可发');
-        if (postAt === -1) problems.push('post report 这一步没了或者改名了,没有东西把结果写回去');
-        if (seedAt !== -1 && postAt !== -1 && seedAt > postAt){
+
+        // 先按 id 对结构，再对名字。
+        for (const want of REPORT_STEPS){
+          const s = byId.get(want.id);
+          if (!s){
+            problems.push('报告 job 里没有 id 为 `' + want.id + '` 的步骤,闸门按 id 找步骤，' +
+                          '少一个说明结构变了，不只是标签变了');
+            continue;
+          }
+          if (s.name !== want.name){
+            problems.push('id 为 `' + want.id + '` 的步骤叫「' + s.name + '」，应该是「' + want.name +
+                          '」,image-grabber 的报告 job 用的就是这几个名字，单边改名就是两边开始分叉的方式');
+          }
+        }
+
+        const seed = byId.get('seed');
+        const fetchStep = byId.get('fetch');
+        const post = byId.get('post');
+
+        if (seed && !seed.text.includes('> comment.md')){
+          problems.push('`seed` 那一步没有写 comment.md，composer 一旦加载失败，这个 job 就没东西可发');
+        }
+        if (seed && post && seed.index > post.index){
           problems.push('兜底 comment.md 写在了回写步骤**之后**，等于没写');
         }
-        if (!/--retry\b/.test(report)) problems.push('取 composer 没带 --retry，一次偶发抖动就能像上次那样把报告静音');
-        if (!report.includes('report-degraded.flag')) problems.push('没有任何东西标记降级：只带 job 结果的评论绝不能读起来像一份完整的');
-        if (postAt !== -1){
-          const end = report.indexOf('\n      - name:', postAt + 1);
-          const postStep = end === -1 ? report.slice(postAt) : report.slice(postAt, end);
-          if (/continue-on-error:\s*true/.test(postStep)) problems.push('回写步骤是 continue-on-error：一个允许自己静默失败的监控，比没有监控更危险');
-          if (!/for \(let attempt/.test(postStep)) problems.push('回写步骤不重试,发评论和别的网络调用没有区别');
-          if (!/readback/.test(postStep)) problems.push('回写步骤不读回,接口收下了不等于有人读得到这条评论');
+        if (fetchStep && !/--retry\b/.test(fetchStep.text)){
+          problems.push('`fetch` 那一步没带 --retry，一次偶发抖动就能像上次那样把报告静音');
+        }
+        if (!report.includes('report-degraded.flag')){
+          problems.push('没有任何东西标记降级：只带 job 结果的评论绝不能读起来像一份完整的');
+        }
+        if (post){
+          if (/continue-on-error:\s*true/.test(post.text)) problems.push('回写步骤是 continue-on-error：一个允许自己静默失败的监控，比没有监控更危险');
+          if (!/for \(let attempt/.test(post.text)) problems.push('回写步骤不重试,发评论和别的网络调用没有区别');
+          if (!/readback/.test(post.text)) problems.push('回写步骤不读回,接口收下了不等于有人读得到这条评论');
         }
         // 顺带把重复跑那条一起守住
         if (/^on:[\s\S]*?\n {2}pull_request:/m.test(wf)){
@@ -467,13 +527,18 @@ const honest = playToDeath(20260811);
         }
       }
     }
-    detail = problems.length ? problems.join(' ｜ ')
-                             : '不 clone、回写前已种兜底评论、取脚本与回写都带重试并读回、降级标红、只挂 push';
+    detail = problems.length
+      ? problems.join(' ｜ ')
+      : REPORT_STEPS.length + ' 个步骤按 id 找齐且名字一致；不 clone、回写前已种兜底评论、' +
+        '取脚本与回写都带重试并读回、降级标红、只挂 push';
   } catch (e) {
     problems.push('读不到 ' + WORKFLOW + '：' + e.message);
     detail = problems.join(' ｜ ');
   }
-  if (problems.length) extra.reportJob = problems;
+  if (problems.length){
+    extra.reportJob = problems;
+    if (found.length) extra.reportJobSteps = found;
+  }
   check('18 报告 job 不会被 clone、抖动或缺失的 composer 弄哑', problems.length === 0, detail);
 }
 
