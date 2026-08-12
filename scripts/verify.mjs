@@ -37,6 +37,10 @@ const PERF_BUDGET = Number(process.env.PERF_BUDGET_MS || 2500);
 const ART         = path.resolve('artifacts');
 const TEST_DIR    = path.resolve('test');
 const WORKFLOW    = '.github/workflows/verify.yml';
+// AGENTS.md 说自己限 200 行,写长了，它写给的那个模型会开始跳着读。
+// 这个数字必须有断言守着：文件只会单向变长，而一句写在文件里的自我要求
+// 不阻止任何人。姊妹项目那份实测五轮之后涨到了 220 行，没人发现。
+const MAX_RULES_LINES = 200;
 
 const checks = [];
 function check(name, ok, detail = ''){
@@ -471,6 +475,45 @@ const honest = playToDeath(20260811);
   }
   if (problems.length) extra.reportJob = problems;
   check('18 报告 job 不会被 clone、抖动或缺失的 composer 弄哑', problems.length === 0, detail);
+}
+
+/* --- 19 规矩文件保持简短，两份副本保持一致 ---
+ *
+ * 这份文件是交给下一个 agent 的交接材料，它有两个只会悄悄变坏的性质：
+ * 越写越长，以及两份副本各自漂。两个都便宜到不值得不检查,而在有人检查
+ * 之前，姊妹项目那份已经涨到 220 行了。
+ *
+ * 行数报进 metrics，评论里直接读得到,别等它撞线那天才知道它一直在长。
+ */
+{
+  let problems = [];
+  let detail = '';
+  try{
+    const agents = fs.readFileSync(path.resolve('AGENTS.md'), 'utf8');
+    const claude = fs.readFileSync(path.resolve('CLAUDE.md'), 'utf8');
+    const lines = agents.trimEnd().split('\n').length;
+    metrics.rulesLines = lines;
+
+    if (lines > MAX_RULES_LINES){
+      problems.push('AGENTS.md ' + lines + ' 行，超过它自己写的 ' + MAX_RULES_LINES +
+                    ' 行上限,砍别处或者拆文件，别放宽上限');
+      extra.rulesTail = agents.trimEnd().split('\n')
+        .map((l, i) => (i + 1) + ': ' + l).slice(-12).join('\n');
+    }
+    if (agents !== claude){
+      const a = agents.split('\n'), c = claude.split('\n');
+      const at = a.findIndex((l, i) => l !== c[i]);
+      problems.push('CLAUDE.md 不是 AGENTS.md 的副本，第 ' + (at + 1) + ' 行开始分叉 ｜ ' +
+                    'AGENTS：' + String(a[at] || '').slice(0, 60) + ' ｜ ' +
+                    'CLAUDE：' + (c[at] === undefined ? '(文件到此结束)' : String(c[at]).slice(0, 60)));
+    }
+    detail = problems.length ? problems.join(' ｜ ')
+                             : lines + ' 行（上限 ' + MAX_RULES_LINES + '），CLAUDE.md 逐字节一致';
+  } catch (e) {
+    problems.push('读不到规矩文件：' + e.message);
+    detail = problems.join(' ｜ ');
+  }
+  check('19 规矩文件不超行数上限，且两份副本逐字节一致', problems.length === 0, detail);
 }
 
 /* ----------------------------- 汇总 ----------------------------- */
