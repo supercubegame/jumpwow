@@ -88,17 +88,21 @@ jobs:
         if: steps.web.outcome != 'success'
         run: exit 1
 
-  # 汇总回写。这一步是整条闭环的关键：agent 读不到 Actions 的原始日志，
-  # 但读得到 PR 评论和 commit 评论。两条路都要通,只挂在 PR 上的话，直接
-  # push 到 main 时报告就没地方去了。
+  # ==========================================================================
+  # 回写报告。这一步是整条闭环的关键：agent 读不到 Actions 的原始日志，但读得到
+  # PR 评论和 commit 评论。两条路都要通,只挂在 PR 上的话，直接 push 到 main 时
+  # 报告就没地方去了。
   #
-  # 这里**故意没有** actions/checkout。image-grabber 的 run #51 就是栽在
-  # 这上面：两条闸门全绿，clone 死在 git 证书校验（exit 128），把整条回写
-  # 一起带走，那次提交上一条评论都没有。从仓库外面看像是「跑过了」。
-  # 这个 job 要的是一个脚本文件，不是一棵工作树。
+  # 这个 job 和 supercubegame/image-grabber 的同名 job 是同一份结构：一样的步骤、
+  # 一样的 id、一样的中文步骤名。两边各写各的，几轮之后就会各自漂。
   #
-  # 步骤名保持英文，和 image-grabber 完全一致,两边的闸门用同一段断言检查
-  # 这个 job 的形状，各写各的就会各自漂。
+  # 这里**故意没有** actions/checkout。image-grabber 的 run #51 就是栽在这上面：
+  # 两条闸门全绿，clone 死在 git 证书校验（exit 128），把整条回写一起带走，那次
+  # 提交上一条评论都没有。这个 job 要的是一个脚本文件，不是一棵工作树。
+  #
+  # 每一步都有稳定的 id，闸门（第 18 条）按 id 定位它们,显示名是装饰，改名不该
+  # 把断言弄哑。但显示名同时也被断言成精确值，所以在这个仓库里改名会立刻红。
+  # ==========================================================================
   report:
     name: 回报结果
     runs-on: ubuntu-latest
@@ -113,18 +117,19 @@ jobs:
         with:
           node-version: '22'
 
-      - name: download reports
+      - name: 下载闸门报告
+        id: download
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           path: reports
           pattern: report-*
 
-      # 在任何会失败的步骤之前种下，每次都跑。这样「降级」这条支路是每一次
-      # 运行都真的走过的，而不是一条从来没被执行过、需要的时候才发现是坏的
-      # 分支。composer 起来了就把它覆盖掉；下面的步骤靠 flag 文件区分手里
-      # 拿的是哪一份。
-      - name: seed a fallback comment
+      # 在任何会失败的步骤之前种下，每次都跑。这样「降级」这条支路是每一次运行
+      # 都真的走过的，而不是一条从来没被执行过、需要的时候才发现是坏的分支。
+      # composer 起来了就把它覆盖掉；下面的步骤靠 flag 文件区分手里拿的是哪一份。
+      - name: 种下兜底评论
+        id: seed
         shell: bash
         run: |
           set -uo pipefail
@@ -159,9 +164,9 @@ jobs:
           fi
 
       # 一个文件走 HTTPS，而不是整仓 clone，并且 pin 在被测的那个 commit 上，
-      # 保证 composer 和它正在汇报的代码是同一版。--retry-all-errors 覆盖的
-      # 就是把 run #51 干掉的那一类偶发网络错误。
-      - name: fetch the composer
+      # 保证 composer 和它正在汇报的代码是同一版。--retry-all-errors 覆盖的就是
+      # 把 run #51 干掉的那一类偶发网络错误。
+      - name: 取 composer
         id: fetch
         continue-on-error: true
         shell: bash
@@ -181,7 +186,7 @@ jobs:
             test -s "$f"
           done
 
-      - name: compose the report
+      - name: 合成报告
         id: compose
         continue-on-error: true
         shell: bash
@@ -193,7 +198,8 @@ jobs:
 
       # 这一步**不是** continue-on-error，也永远不许改成 continue-on-error：
       # 一个允许自己静默失败的回写，从外面看起来就是 run #51 的样子。
-      - name: post report
+      - name: 回写报告
+        id: post
         uses: actions/github-script@v7
         with:
           retries: 3
@@ -258,7 +264,8 @@ jobs:
 
       # 判定从 job 结果算，所以 composer 没到位也照样成立。composer 在的时候
       # 再用 --check 复核一遍。
-      - name: fail if a gate failed or the report was degraded
+      - name: 闸门失败或报告降级则失败
+        id: verdict
         if: always()
         shell: bash
         run: |
