@@ -19,6 +19,13 @@
 6. **每加一条断言先问：这个功能完全没实现的话，它会不会失败？** 不会就是空的。
    空断言比缺断言更糟,缺了你知道自己没测，空的会让你以为测过了，而且永远绿，
    没人会去查一条绿的。
+7. **送不出结论的闸门，等于没跑。** 每次推送之后，除了看闸门绿不绿，还要确认
+   **那条评论真的出现了**,没出现就当这次没跑过。姊妹项目 image-grabber 的
+   run #51 是两条闸门全绿、一条评论都没有：报告 job 的 `actions/checkout`
+   死在 git 证书校验（exit 128）。所以这边的报告 job **不 clone**（只用 API
+   取 `scripts/compose-report.mjs`，带 `--retry`）、在任何会失败的步骤之前先种
+   一份兜底 `comment.md`、回写重试并读回、降级的报告自己说明是降级的并让 job 变红。
+   第 18 条断言盯着这个 job 的形状,这条规矩已经被破过一次，所以它不能只待在文档里。
 
 ## 结构
 
@@ -31,8 +38,9 @@ bin/jumpwow.js       CLI 入口：交互 / 观战 / 无头 bench
 web/index.html       浏览器 canvas 渲染器 + 排行榜前端
 server/api.mjs       排行榜 API，零依赖，JSON 文件存储
 scripts/serve.mjs    静态服务 + 挂载 API
-scripts/verify.mjs   引擎闸门，17 项，零依赖，约 20 秒
+scripts/verify.mjs   引擎闸门，18 项，零依赖，约 20 秒
 scripts/verify-web.mjs 浏览器闸门，13 项，要 playwright，约 1 分半
+scripts/compose-report.mjs  把两条闸门的报告合成回写的那条评论
 test/*.test.js       单元测试
 ```
 
@@ -48,6 +56,7 @@ npm start -- --bot      # 看机器人玩
 npm start -- --seed 42  # 指定地图
 
 SEEDS=40 SURVIVE_SEC=90 npm run verify   # 加严
+node scripts/compose-report.mjs artifacts   # 本地预览那条评论长什么样
 ```
 
 ## 排行榜为什么这么设计
@@ -87,6 +96,18 @@ SEEDS=40 SURVIVE_SEC=90 npm run verify   # 加严
 
 耦合：`CARD_INK_MIN`（scripts/verify-web.mjs，0.0175）↔ 分享图的排版。实测 5.28%，
 下限取三分之一。改了卡片上画什么就要重测这个数。
+
+## CI 与报告
+
+workflow **只挂 push**。以前同时挂 `push` 和 `pull_request`，于是 PR 上每次推送
+都跑两遍闸门、抢同一条评论。报告 job 会用 `listPullRequestsAssociatedWithCommit`
+从 commit 反查 PR，所以 PR 上照样有评论,别为了拿 PR 号把 `pull_request` 加回来。
+
+报告 job 的步骤名保持英文，和 image-grabber 一字不差：两个仓库共用同一段断言
+逻辑（第 18 条）来检查这个 job 的形状，各写各的就会各自漂。
+
+评论内容在 `scripts/compose-report.mjs` 里，可以本地跑。报告缺失算失败，并且要
+带上那条闸门 stdout 的尾巴,「没有产出报告」只说明监控坏了，不说明为什么。
 
 ## 为什么有个机器人
 
