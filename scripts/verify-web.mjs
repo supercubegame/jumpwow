@@ -32,6 +32,20 @@ const BOT_SEC = Number(process.env.BOT_SEC || 18);
 // 分享图上「不是背景」的像素至少要占这么多。实测 5.28%（39927 像素），
 // 取三分之一。它只抓「整块内容没画出来」，不是排版基准。见第 09 条注释。
 const CARD_INK_MIN = Number(process.env.CARD_INK_MIN || 0.0175);
+// 平台四种皮肤的面/边 + 角色身体色。和 web/index.html 里的 SKIN 是耦合的一对：
+// 改了那边的配色而这里不同步，countInk 会数到 0,它会红，不会假绿。
+const PLAT_PALETTE = ['#7ee0a4', '#3f9a6a',    // NORMAL
+                      '#7cc8f5', '#3a7fae',    // MOVING
+                      '#e8bd7c', '#a37438',    // FRAGILE
+                      '#f59ad4', '#a94f8c',    // SPRING
+                      '#ffd76b'];              // 角色身体
+// 游戏画面上「内容色」至少要占这么多像素。实测 2.025% / 1.853%（900x495），
+// 取较小值的三分之一。
+//
+// 别再往下调：角色身体自己就有大约 450 个像素，约等于 0.1%,下限设在那个量级，
+// 「平台全没画出来、只剩一个角色」就能从底下钻过去，而那恰恰是这条要抓的东西。
+// 改了平台尺寸或视野高度就要重测。
+const PLAT_INK_MIN = Number(process.env.PLAT_INK_MIN || 0.006);
 const ART     = path.resolve('artifacts');
 
 const checks = [];
@@ -58,6 +72,41 @@ async function until(page, fn, opt){
     await page.waitForTimeout(interval);
   }
   return false;
+}
+
+/**
+ * 数画面上有多少像素是「内容色」（平台皮肤 + 角色身体）。
+ *
+ * 为什么不用 `__DIAG__.sampleColors()`：那个数的是**不同颜色的个数**，而集合
+ * 的大小不是差集。平台盖住几条天色带的时候，新增的平台色和被盖掉的天色互相
+ * 抵消，这个数原地不动,实测菜单 24 → 游戏 24，而平台明明好好地画在那儿。
+ * 那条断言从写下那天起就是一次抛硬币，只是一直抛正面。
+ *
+ * 天色是蓝紫渐变、星星是白，都不在这个调色板里，所以**菜单必须数到 0**,
+ * 那就是这条断言自带的负向孪生：一个把整屏都算成内容的实现（比如把阈值放宽
+ * 到「非黑即内容」），过不了菜单那一关。
+ *
+ * 每通道 >>3 量化，吸掉渐变与抗锯齿的一点点误差；平台内部是实心填充，
+ * globalAlpha 在画平台之前已经复位成 1，所以中间那些像素是精确值。
+ */
+async function countInk(page){
+  return page.evaluate(pal => {
+    const cv = document.getElementById('c');
+    const g  = cv.getContext('2d', { willReadFrequently: true });
+    const q  = (r, gg, b) => ((r >> 3) << 16) | ((gg >> 3) << 8) | (b >> 3);
+    const want = new Set(pal.map(h => {
+      const v = parseInt(h.slice(1), 16);
+      return q((v >> 16) & 255, (v >> 8) & 255, v & 255);
+    }));
+    const d = g.getImageData(0, 0, cv.width, cv.height).data;
+    let ink = 0;
+    for (let i = 0; i < d.length; i += 4){
+      if (want.has(q(d[i], d[i + 1], d[i + 2]))) ink++;
+    }
+    const pixels = cv.width * cv.height;
+    return { ink, pixels, ratio: Math.round((ink / pixels) * 100000) / 100000,
+             w: cv.width, h: cv.height };
+  }, PLAT_PALETTE);
 }
 
 /** 玩到死，产出一局可提交的样本。理由见 scripts/verify.mjs 里的同名函数。 */
@@ -130,8 +179,12 @@ try{
 
   /* --- 03 canvas 真的画出了东西 --- */
   const colors0 = await page.evaluate(() => window.__DIAG__.sampleColors());
+  const inkMenu = await countInk(page);
   metrics.menuColors = colors0;
-  check('03 菜单画面非空白', colors0 >= 4, '采样到 ' + colors0 + ' 种颜色');
+  metrics.menuInk = inkMenu.ink;
+  metrics.canvas = inkMenu.w + 'x' + inkMenu.h;
+  check('03 菜单画面非空白', colors0 >= 4,
+        '采样到 ' + colors0 + ' 种颜色，画布 ' + inkMenu.w + 'x' + inkMenu.h);
 
   /* --- 04 排行榜拉到数据并渲染 --- */
   const boardOk = await until(page, () => window.__DIAG__.boardRows >= 2, { timeout: 15000 });
@@ -159,11 +212,34 @@ try{
   check('06 主循环在跑', f1 - f0 > 10,
         (f1 - f0) + ' 帧 / 1.5s（约 ' + metrics.fps + ' fps）');
 
-  /* --- 07 画面内容比菜单更丰富，说明平台真的渲染了 --- */
+  /* --- 07 平台与角色真的渲染到画面上 ---
+   *
+   * 这条以前比的是「游戏画面的不同颜色数 > 菜单画面的」。那是个错的度量：
+   * 集合的大小不是差集。平台盖住几条天色带的时候，新增的平台色和被盖掉的
+   * 天色互相抵消，这个数原地不动,实测菜单 24 种 → 游戏 24 种，而分享图
+   * 内容像素 5.38%、机器人在浏览器里跳到 90，渲染明明是好的。
+   *
+   * 它从写下那天起就是一次抛硬币，只是一直抛正面：同一份代码接下来两次跑出
+   * 了 25 和 26,那个数一直在 24 附近晃，以前只是每次都晃在对的那一侧。
+   *
+   * 现在数的是内容色占了多少像素（见 countInk 的注释），并且要求菜单那一次
+   * 必须是 0。「游戏里有内容色」和「菜单里没有」两条一起，才排除掉一个把
+   * 整屏都算成内容的实现。
+   *
+   * 颜色数还是留着报到 metrics 里当参考,它不再承重，也别再让它承重。
+   */
   const colors1 = await page.evaluate(() => window.__DIAG__.sampleColors());
+  const inkPlay = await countInk(page);
   metrics.playColors = colors1;
-  check('07 游戏画面渲染出平台与角色', colors1 > colors0,
-        '菜单 ' + colors0 + ' 种 → 游戏 ' + colors1 + ' 种');
+  metrics.playInk = inkPlay.ink;
+  metrics.playInkRatio = inkPlay.ratio;
+  const inkOk07 = inkMenu.ink === 0 && inkPlay.ratio >= PLAT_INK_MIN;
+  check('07 平台与角色真的渲染到画面上', inkOk07,
+        '内容色 ' + inkPlay.ink + '/' + inkPlay.pixels + ' 像素（' +
+        (inkPlay.ratio * 100).toFixed(3) + '%，下限 ' + (PLAT_INK_MIN * 100).toFixed(3) +
+        '%）· 菜单 ' + inkMenu.ink + ' 像素 · 颜色数 ' + colors0 + ' → ' + colors1 + '（仅参考）' +
+        (inkMenu.ink === 0 ? '' : ' ← 菜单不该有内容色，调色板认宽了，这条证明不了东西') +
+        (inkPlay.ratio >= PLAT_INK_MIN ? '' : ' ← 平台/角色没画出来，或者 SKIN 改了色而 PLAT_PALETTE 没跟'));
 
   /* --- 08 输入生效且被记进日志（提交靠的就是它） --- */
   const p0 = await page.evaluate(() => window.__DIAG__.playerPos);

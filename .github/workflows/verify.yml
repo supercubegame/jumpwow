@@ -1,18 +1,15 @@
 name: verify
 
+# 只挂 push。以前同时挂 push 和 pull_request，于是 PR 上的每次推送都跑两遍
+# 闸门、抢同一条评论。报告 job 会从 commit 反查 PR，所以 PR 上照样有评论。
 on:
   push:
     branches: ['**']
-  pull_request:
   workflow_dispatch:
 
 concurrency:
   group: verify-${{ github.ref }}
   cancel-in-progress: true
-
-permissions:
-  contents: write          # commit 评论需要写权限
-  pull-requests: write
 
 jobs:
   # 引擎闸门：零依赖，什么都不装，二十秒出结果。
@@ -27,16 +24,23 @@ jobs:
         with:
           node-version: '22'
 
+      # stdout 同时 tee 成文件：闸门要是在写报告之前就死了，这份日志是唯一
+      # 还留得下来的证据,而 CI 的原始日志，读评论的那个 agent 是打不开的。
+      # pipefail 保证这一步的成败跟着 node 的退出码走，而不是 tee 的。
       - name: 跑引擎闸门
         id: gate
         continue-on-error: true
-        run: npm run verify
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p artifacts
+          npm run verify 2>&1 | tee artifacts/stdout-eng.log
 
       - name: 上传报告
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: verify-report
+          name: report-eng
           path: artifacts/
           retention-days: 14
           if-no-files-found: warn
@@ -65,13 +69,17 @@ jobs:
       - name: 跑浏览器闸门
         id: web
         continue-on-error: true
-        run: npm run verify:web
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p artifacts
+          npm run verify:web 2>&1 | tee artifacts/stdout-web.log
 
       - name: 上传截图
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: verify-web-artifacts
+          name: report-web
           path: artifacts/
           retention-days: 14
           if-no-files-found: warn
@@ -80,115 +88,190 @@ jobs:
         if: steps.web.outcome != 'success'
         run: exit 1
 
-  # 汇总回写。
+  # 汇总回写。这一步是整条闭环的关键：agent 读不到 Actions 的原始日志，
+  # 但读得到 PR 评论和 commit 评论。两条路都要通,只挂在 PR 上的话，直接
+  # push 到 main 时报告就没地方去了。
   #
-  # 这一步是整条闭环的关键：agent 读不到 Actions 的原始日志，但读得到
-  # PR 评论和 commit 评论。所以两条路都要通,只挂在 pull_request 上的话，
-  # 直接 push 到 main 时报告就没地方去了。
+  # 这里**故意没有** actions/checkout。image-grabber 的 run #51 就是栽在
+  # 这上面：两条闸门全绿，clone 死在 git 证书校验（exit 128），把整条回写
+  # 一起带走，那次提交上一条评论都没有。从仓库外面看像是「跑过了」。
+  # 这个 job 要的是一个脚本文件，不是一棵工作树。
+  #
+  # 步骤名保持英文，和 image-grabber 完全一致,两边的闸门用同一段断言检查
+  # 这个 job 的形状，各写各的就会各自漂。
   report:
     name: 回报结果
     runs-on: ubuntu-latest
     needs: [gate, web]
     if: always()
+    timeout-minutes: 10
+    permissions:
+      contents: write          # commit 评论需要写权限
+      pull-requests: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: download reports
+        uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: verify-report
-          path: eng/
+          path: reports
+          pattern: report-*
 
-      - uses: actions/download-artifact@v4
+      # 在任何会失败的步骤之前种下，每次都跑。这样「降级」这条支路是每一次
+      # 运行都真的走过的，而不是一条从来没被执行过、需要的时候才发现是坏的
+      # 分支。composer 起来了就把它覆盖掉；下面的步骤靠 flag 文件区分手里
+      # 拿的是哪一份。
+      - name: seed a fallback comment
+        shell: bash
+        run: |
+          set -uo pipefail
+          touch report-degraded.flag
+          {
+            echo "⚠️ **报告降级** — composer 没能加载，所以这条评论只有 job 级别的"
+            echo "结果，没有逐项证据。"
+            echo ""
+            echo "| 闸门 | job 结果 |"
+            echo "| --- | --- |"
+            echo "| 引擎闸门 | \`${{ needs.gate.result }}\` |"
+            echo "| 浏览器闸门 | \`${{ needs.web.result }}\` |"
+            echo ""
+            echo "提交 \`${GITHUB_SHA:0:7}\` · [完整日志]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
+          } > comment.md
+          found=0
+          while IFS= read -r log; do
+            found=$((found + 1))
+            {
+              echo ""
+              echo "<details><summary>$(basename "$log") 末尾 80 行</summary>"
+              echo ""
+              echo '```'
+              tail -n 80 "$log"
+              echo '```'
+              echo ""
+              echo "</details>"
+            } >> comment.md
+          done < <(find reports -name 'stdout-*.log' 2>/dev/null | sort)
+          if [ "$found" -eq 0 ]; then
+            printf '\n连闸门的 stdout 日志都没下载到，说明这次在闸门产出任何东西之前就断了 - 去看 workflow，不是看闸门。\n' >> comment.md
+          fi
+
+      # 一个文件走 HTTPS，而不是整仓 clone，并且 pin 在被测的那个 commit 上，
+      # 保证 composer 和它正在汇报的代码是同一版。--retry-all-errors 覆盖的
+      # 就是把 run #51 干掉的那一类偶发网络错误。
+      - name: fetch the composer
+        id: fetch
         continue-on-error: true
-        with:
-          name: verify-web-artifacts
-          path: web/
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p scripts
+          for f in scripts/compose-report.mjs; do
+            curl --fail --silent --show-error --location \
+                 --retry 5 --retry-delay 3 --retry-all-errors \
+                 --connect-timeout 10 --max-time 60 \
+                 -H "Authorization: Bearer $GH_TOKEN" \
+                 -H "Accept: application/vnd.github.raw" \
+                 -o "$f" \
+                 "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$f?ref=$GITHUB_SHA"
+            test -s "$f"
+          done
 
-      - uses: actions/github-script@v7
+      - name: compose the report
+        id: compose
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/compose-report.mjs reports
+          test -s comment.md
+          rm -f report-degraded.flag
+
+      # 这一步**不是** continue-on-error，也永远不许改成 continue-on-error：
+      # 一个允许自己静默失败的回写，从外面看起来就是 run #51 的样子。
+      - name: post report
+        uses: actions/github-script@v7
         with:
+          retries: 3
           script: |
             const fs = require('fs');
-            const runUrl = context.serverUrl + '/' + context.repo.owner + '/' +
-                           context.repo.repo + '/actions/runs/' + context.runId;
-            const engOk = '${{ needs.gate.result }}' === 'success';
-            const webOk = '${{ needs.web.result }}' === 'success';
+            const marker = '<!-- verify-gate -->';
+            const degraded = fs.existsSync('report-degraded.flag');
+            const text = fs.readFileSync('comment.md', 'utf8');
+            const body = marker + '\n' + text;
+            const { owner, repo } = context.repo;
 
-            const read = p => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return null; } };
-            const eng = read('eng/verify-report.json');
-            const web = read('web/verify-web-report.json');
+            // 先写 job summary。就算下面每次尝试都失败，证据至少还留在 run
+            // 页面上，人能看到。
+            await core.summary.addRaw(text).write();
 
-            let body = '## 验证闸门 ' + (engOk && webOk ? '全部通过' : '有失败') + '\n\n';
-            body += '提交 `' + context.sha.slice(0, 7) + '` · [完整日志](' + runUrl + ')\n\n';
-            body += '| 闸门 | 结果 |\n| --- | --- |\n';
-            body += '| 引擎 | ' + (engOk ? '通过' : '失败') + ' ' + (eng ? '(' + eng.passed + '/' + eng.total + ')' : '') + ' |\n';
-            body += '| 浏览器 | ' + (webOk ? '通过' : '失败') + ' ' + (web ? '(' + web.passed + '/' + web.total + ')' : '') + ' |\n';
+            const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-            if (eng) {
-              const m = eng.metrics || {};
-              body += '\n**引擎**\n\n';
-              body += '- 单元测试 ' + (m.unitPass == null ? '?' : m.unitPass) + ' 条\n';
-              body += '- 机器人 ' + m.seeds + ' 局 × ' + m.surviveSec + 's，高度中位 ' + m.medianScore + '（' + m.minScore + '-' + m.maxScore + '）\n';
-              body += '- 最大平台间距 ' + m.worstGap + '，活跃平台 ' + m.platformsLive + '\n';
-              body += '- 5min 模拟 ' + m.perfMs + ' ms\n';
-            }
-            if (web) {
-              const m = web.metrics || {};
-              body += '\n**浏览器**\n\n';
-              body += '- 约 ' + m.fps + ' fps，画面采样颜色 ' + m.menuColors + ' → ' + m.playColors + ' 种\n';
-              // 阈值要按实测值收紧，所以这个数必须能从评论里直接读到
-              body += '- 分享图内容像素 ' + (m.cardInkPixels == null ? '?' : m.cardInkPixels) +
-                      '（占 ' + (m.cardInkRatio == null ? '?' : (m.cardInkRatio * 100).toFixed(2) + '%') + '）\n';
-              body += '- 机器人在浏览器里 高度 ' + m.botScore + ' · 跳跃 ' + m.botJumps + '\n';
-            }
-
-            const fails = [].concat(eng ? eng.failures : [], web ? web.failures : []).filter(Boolean);
-            if (fails.length) {
-              body += '\n**失败项**\n\n';
-              for (const f of fails) body += '- ' + f + '\n';
-            }
-            if (eng && eng.unitTail) {
-              body += '\n<details><summary>单元测试输出末尾</summary>\n\n```\n' +
-                      eng.unitTail.slice(-3000) + '\n```\n</details>\n';
-            }
-
-            body += '\n<!-- verify-gate -->';
-
-            const pr = context.payload.pull_request;
-
-            if (pr) {
-              // 有 PR：更新同一条评论，不刷屏
-              const { data: comments } = await github.rest.issues.listComments({
-                owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: pr.number, per_page: 100,
+            async function postOnce() {
+              // 从 commit 反查 PR。不读 context.payload.pull_request：那要求
+              // workflow 挂在 pull_request 事件上，而挂上去就会每次跑两遍。
+              const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner, repo, commit_sha: context.sha
               });
-              const prev = comments.find(c => c.body && c.body.includes('<!-- verify-gate -->'));
-              if (prev) {
-                await github.rest.issues.updateComment({
-                  owner: context.repo.owner, repo: context.repo.repo,
-                  comment_id: prev.id, body,
+              const open = associated.data.find(pr => pr.state === 'open');
+              if (open) {
+                const comments = await github.paginate(github.rest.issues.listComments, {
+                  owner, repo, issue_number: open.number, per_page: 100
                 });
-              } else {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner, repo: context.repo.repo,
-                  issue_number: pr.number, body,
-                });
+                const existing = comments.find(c => c.body && c.body.includes(marker));
+                const result = existing
+                  ? await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body })
+                  : await github.rest.issues.createComment({ owner, repo, issue_number: open.number, body });
+                // 接口收下了不等于有人读得到这条评论，读回来确认一遍。
+                const readback = await github.rest.issues.getComment({ owner, repo, comment_id: result.data.id });
+                if (!readback.data.body.includes(marker)) throw new Error('PR 评论读回后没有标记');
+                return `PR #${open.number}（评论 ${result.data.id}）`;
               }
-            } else {
-              // 没有 PR（直接 push 到分支或 main）：写 commit 评论。
-              // agent 拿着 commit SHA 就能读到，不需要知道 PR 号。
-              await github.rest.repos.createCommitComment({
-                owner: context.repo.owner, repo: context.repo.repo,
-                commit_sha: context.sha, body,
+              // 没有 PR 的那条支路。直接 push 到 main 时靠的就是它,而那正是
+              // 没人盯着的时候。
+              const result = await github.rest.repos.createCommitComment({
+                owner, repo, commit_sha: context.sha, body
               });
+              const readback = await github.rest.repos.getCommitComment({ owner, repo, comment_id: result.data.id });
+              if (!readback.data.body.includes(marker)) throw new Error('commit 评论读回后没有标记');
+              return `commit ${context.sha.slice(0, 7)}（评论 ${result.data.id}）`;
             }
 
-            core.info('报告已送达。');
+            let posted = null;
+            let last = null;
+            for (let attempt = 1; attempt <= 4 && !posted; attempt += 1) {
+              try {
+                posted = await postOnce();
+              } catch (err) {
+                last = err;
+                core.warning(`第 ${attempt} 次回写失败：${err.message}`);
+                if (attempt < 4) await sleep(2000 * attempt);
+              }
+            }
+            if (!posted) throw new Error(`重试 4 次仍然没能把报告写回去：${last && last.message}`);
+            core.info(`报告已送达 ${posted}`);
+            if (degraded) core.setFailed('报告是以降级形式送出的：composer 没加载，评论里只有 job 结果，没有逐项证据');
 
-      # 回写失败必须让 job 红。
-      # 以前这一步是静默的,权限配错的话，你会以为一切正常，
-      # 实际上 agent 早就什么都看不到了。监控自己坏掉却没人知道，
-      # 比被监控的东西坏掉更危险。
-      - name: 送达失败视为闸门失败
-        if: failure()
+      # 判定从 job 结果算，所以 composer 没到位也照样成立。composer 在的时候
+      # 再用 --check 复核一遍。
+      - name: fail if a gate failed or the report was degraded
+        if: always()
+        shell: bash
         run: |
-          echo "报告没能回写。agent 读不到结果，等于整条闭环断了。"
-          exit 1
+          set -uo pipefail
+          rc=0
+          for pair in "引擎闸门:${{ needs.gate.result }}" "浏览器闸门:${{ needs.web.result }}"; do
+            if [ "${pair##*:}" != "success" ]; then echo "${pair%%:*}: ${pair##*:}"; rc=1; fi
+          done
+          if [ -f report-degraded.flag ]; then
+            echo "composer 没能加载，送出去的评论里没有逐项证据"
+            rc=1
+          fi
+          if [ -f scripts/compose-report.mjs ]; then
+            node scripts/compose-report.mjs reports --check || rc=1
+          fi
+          exit $rc

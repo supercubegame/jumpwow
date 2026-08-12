@@ -36,6 +36,11 @@ const MIN_SCORE   = Number(process.env.MIN_SCORE || 120);
 const PERF_BUDGET = Number(process.env.PERF_BUDGET_MS || 2500);
 const ART         = path.resolve('artifacts');
 const TEST_DIR    = path.resolve('test');
+const WORKFLOW    = '.github/workflows/verify.yml';
+// AGENTS.md 说自己限 200 行,写长了，它写给的那个模型会开始跳着读。
+// 这个数字必须有断言守着：文件只会单向变长，而一句写在文件里的自我要求
+// 不阻止任何人。姊妹项目那份实测五轮之后涨到了 220 行，没人发现。
+const MAX_RULES_LINES = 200;
 
 const checks = [];
 function check(name, ok, detail = ''){
@@ -391,6 +396,124 @@ const honest = playToDeath(20260811);
     await srv.close();
     try { fs.rmSync(store, { force: true }); } catch (e) {}
   }
+}
+
+/* --- 18 报告 job 的形状 ---
+ *
+ * 送不出结论的闸门，等于没跑。image-grabber 的 run #51 就是这样：两条闸门
+ * 全绿，报告 job 的 actions/checkout 死在 git 证书校验（exit 128），那次
+ * 提交上一条评论都没有,从仓库外面看完全像是「跑过了」。
+ *
+ * 这条守的四件事在坏掉的时候全都是静默的，所以它们必须是断言而不是文档：
+ * 那个 job 不 clone、在任何会失败的步骤之前就种下兜底评论、取脚本和回写
+ * 都带重试、降级的报告自己说明自己是降级的。
+ *
+ * 报告 job 的步骤名保持英文，和 image-grabber 一字不差,两个仓库共用这段
+ * 断言逻辑，各写各的就会各自漂。
+ */
+{
+  let problems = [];
+  let detail = '';
+  try{
+    const wf = fs.readFileSync(path.resolve(WORKFLOW), 'utf8');
+    const jobs = {};
+    let current = null, inJobs = false;
+    for (const line of wf.split('\n')){
+      if (/^jobs:\s*$/.test(line)){ inJobs = true; continue; }
+      if (!inJobs) continue;
+      const m = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+      if (m){ current = m[1]; jobs[current] = []; continue; }
+      if (current) jobs[current].push(line);
+    }
+    const report = jobs.report ? jobs.report.join('\n') : null;
+
+    if (!report){
+      problems.push('workflow 里没有 report job,改名了，还是这段解析坏了？找到的 job：' +
+                    (Object.keys(jobs).join('、') || '一个都没有'));
+    } else {
+      // 负向孪生。解析出空块的话，下面每条「不包含」都会免费通过，所以先
+      // 证明这段解析是有效的：两条闸门 job 确实 checkout 了，而且必须 checkout。
+      for (const name of ['gate', 'web']){
+        const block = jobs[name] ? jobs[name].join('\n') : '';
+        if (!block.includes('actions/checkout')){
+          problems.push(name + ' job 的块里没有 actions/checkout，说明 workflow 解析是错的，' +
+                        '下面那些断言什么都证明不了');
+        }
+      }
+      if (!problems.length){
+        if (report.includes('actions/checkout')){
+          problems.push('报告 job 又去 clone 整个仓库了：那正是 image-grabber run #51 里 exit 128 ' +
+                        '的那一步，它把整条报告一起带走了。这个 job 要的是一个脚本文件，不是工作树');
+        }
+        const seedAt = report.indexOf('> comment.md');
+        const postAt = report.indexOf('      - name: post report');
+        if (seedAt === -1) problems.push('没有任何地方写兜底 comment.md，composer 一旦加载失败，这个 job 就没东西可发');
+        if (postAt === -1) problems.push('post report 这一步没了或者改名了,没有东西把结果写回去');
+        if (seedAt !== -1 && postAt !== -1 && seedAt > postAt){
+          problems.push('兜底 comment.md 写在了回写步骤**之后**，等于没写');
+        }
+        if (!/--retry\b/.test(report)) problems.push('取 composer 没带 --retry，一次偶发抖动就能像上次那样把报告静音');
+        if (!report.includes('report-degraded.flag')) problems.push('没有任何东西标记降级：只带 job 结果的评论绝不能读起来像一份完整的');
+        if (postAt !== -1){
+          const end = report.indexOf('\n      - name:', postAt + 1);
+          const postStep = end === -1 ? report.slice(postAt) : report.slice(postAt, end);
+          if (/continue-on-error:\s*true/.test(postStep)) problems.push('回写步骤是 continue-on-error：一个允许自己静默失败的监控，比没有监控更危险');
+          if (!/for \(let attempt/.test(postStep)) problems.push('回写步骤不重试,发评论和别的网络调用没有区别');
+          if (!/readback/.test(postStep)) problems.push('回写步骤不读回,接口收下了不等于有人读得到这条评论');
+        }
+        // 顺带把重复跑那条一起守住
+        if (/^on:[\s\S]*?\n {2}pull_request:/m.test(wf)){
+          problems.push('workflow 同时挂在 push 和 pull_request 上，PR 里每次推送都会跑两遍闸门、抢同一条评论');
+        }
+      }
+    }
+    detail = problems.length ? problems.join(' ｜ ')
+                             : '不 clone、回写前已种兜底评论、取脚本与回写都带重试并读回、降级标红、只挂 push';
+  } catch (e) {
+    problems.push('读不到 ' + WORKFLOW + '：' + e.message);
+    detail = problems.join(' ｜ ');
+  }
+  if (problems.length) extra.reportJob = problems;
+  check('18 报告 job 不会被 clone、抖动或缺失的 composer 弄哑', problems.length === 0, detail);
+}
+
+/* --- 19 规矩文件保持简短，两份副本保持一致 ---
+ *
+ * 这份文件是交给下一个 agent 的交接材料，它有两个只会悄悄变坏的性质：
+ * 越写越长，以及两份副本各自漂。两个都便宜到不值得不检查,而在有人检查
+ * 之前，姊妹项目那份已经涨到 220 行了。
+ *
+ * 行数报进 metrics，评论里直接读得到,别等它撞线那天才知道它一直在长。
+ */
+{
+  let problems = [];
+  let detail = '';
+  try{
+    const agents = fs.readFileSync(path.resolve('AGENTS.md'), 'utf8');
+    const claude = fs.readFileSync(path.resolve('CLAUDE.md'), 'utf8');
+    const lines = agents.trimEnd().split('\n').length;
+    metrics.rulesLines = lines;
+
+    if (lines > MAX_RULES_LINES){
+      problems.push('AGENTS.md ' + lines + ' 行，超过它自己写的 ' + MAX_RULES_LINES +
+                    ' 行上限,砍别处或者拆文件，别放宽上限');
+      extra.rulesTail = agents.trimEnd().split('\n')
+        .map((l, i) => (i + 1) + ': ' + l).slice(-12).join('\n');
+    }
+    if (agents !== claude){
+      const a = agents.split('\n'), c = claude.split('\n');
+      const at = a.findIndex((l, i) => l !== c[i]);
+      problems.push('CLAUDE.md 不是 AGENTS.md 的副本，第 ' + (at + 1) + ' 行开始分叉 ｜ ' +
+                    'AGENTS：' + String(a[at] || '').slice(0, 60) + ' ｜ ' +
+                    'CLAUDE：' + (c[at] === undefined ? '(文件到此结束)' : String(c[at]).slice(0, 60)));
+    }
+    detail = problems.length ? problems.join(' ｜ ')
+                             : lines + ' 行（上限 ' + MAX_RULES_LINES + '），CLAUDE.md 逐字节一致';
+  } catch (e) {
+    problems.push('读不到规矩文件：' + e.message);
+    detail = problems.join(' ｜ ');
+  }
+  check('19 规矩文件不超行数上限，且两份副本逐字节一致', problems.length === 0, detail);
 }
 
 /* ----------------------------- 汇总 ----------------------------- */
